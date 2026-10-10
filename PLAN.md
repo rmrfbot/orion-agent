@@ -8,11 +8,11 @@ Voice-controlled study assistant that lives in Chrome. The student talks, Orion 
 
 ## 1. The one demo flow (everything else is optional)
 
-1. Student holds the mic button and says: *"Open my binary search tree notes."*
-2. Orion narrates as it works: *"Opening your Data Structures course… found Module 5… opening the notes."*
-3. The notes page opens in the student's own browser tab.
-4. Orion says a short spoken summary of the page.
-5. Student says: *"Quiz me on this."* Orion asks a question out loud, the student answers by voice, Orion gives feedback.
+1. Student says: *"Hey Orion, open my binary search tree notes."* (or *"Orion"* followed by a command).
+2. The desktop bubble detects the wake phrase and transcribes locally; only recognized command text is sent to the backend.
+3. The open Chrome side panel observes the active tab, asks Gemini for one next action, and clicks a numbered visible element.
+4. Orion re-observes after every click until it finds the notes or reports that it could not.
+5. Spoken narration, page summaries, and voice quizzes remain follow-up work after voice navigation is reliable.
 
 If this works reliably 10 times in a row, we win. Do not add features until it does.
 
@@ -23,19 +23,21 @@ If this works reliably 10 times in a row, we win. Do not add features until it d
 ## 2. Architecture
 
 ```
+Desktop bubble
+  microphone + local Vosk wake phrase / command recognition
+     │  POST /voice/command {command}; audio stays local
+     ▼
+FastAPI backend (localhost:8000)   ← holds Gemini API key
+  GET /voice/commands/next  extension polls for recognized command
+  POST /plan                observation + request → next click/done/fail (Gemini)
+     ▲  HTTP (fetch)
+     │
 Chrome extension
-  Side panel (UI + mic + agent loop)
+  Side panel (agent loop; must remain open)
      │  chrome.tabs.sendMessage         ┌──────────────────────────┐
      ├───────────────────────────────►  │ Content script (in tab)  │
      │  {observe | click | readText}    │ lists/clicks/reads DOM   │
      │                                  └──────────────────────────┘
-     │  HTTP (fetch)
-     ▼
-FastAPI backend (localhost:8000)   ← holds ALL API keys
-  POST /transcribe  audio  → text            (ElevenLabs STT)
-  POST /plan        state  → next tool call  (Gemini function calling)
-  POST /speak       text   → audio           (ElevenLabs TTS)
-  POST /study       page text + request → summary / quiz Q / feedback (Gemini)
 ```
 
 Key decisions:
@@ -51,10 +53,11 @@ Key decisions:
 
 | Layer | Tech |
 |---|---|
-| Extension | Chrome Manifest V3, side panel, content script, plain JS (React only if one teammate is already fast with it) |
+| Voice UI | Python desktop bubble, sounddevice, local Vosk model |
+| Extension | Chrome Manifest V3, side panel, content script, plain JS |
 | Backend | Python 3.11+, FastAPI, uvicorn |
 | LLM | Gemini via `google-genai` (function calling) |
-| Voice | ElevenLabs Python SDK (speech-to-text and text-to-speech) |
+| Voice | Offline Vosk speech recognition; ElevenLabs TTS is a later addition |
 | Config | `python-dotenv`, `.env` (in `.gitignore`) |
 
 Install:
@@ -79,14 +82,16 @@ orion/
 ├── PLAN.md
 ├── README.md
 ├── .gitignore            (.env, node_modules, __pycache__)
-├── backend/
+  ├── backend/
 │   ├── main.py           FastAPI app + CORS + routes
 │   ├── agent.py          /plan logic: Gemini tool declarations + call
 │   ├── study.py          /study logic: summary, quiz, feedback prompts
 │   ├── voice.py          ElevenLabs STT/TTS wrappers
 │   ├── requirements.txt
 │   └── .env.example
-└── extension/
+  ├── orion_bubble.py    local wake phrase + speech capture
+  ├── models/            ignored local Vosk model
+  └── extension/
     ├── manifest.json
     ├── background.js     opens the side panel on icon click, nothing else
     ├── content.js        observe / click / readText
