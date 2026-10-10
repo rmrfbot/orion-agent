@@ -1,6 +1,16 @@
+# Python
 .venv/
-.env
-**/.env
 __pycache__/
 *.pyc
+
+# Secrets
+.env
+**/.env
+
+# Browser authentication
+.orion_chrome_profile/
+**/playwright/.auth/
+
+# Generated files
 *.png
+.pytest_cache/
