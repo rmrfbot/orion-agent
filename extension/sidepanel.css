@@ -52,6 +52,8 @@ h2 { font-size: 13px; font-weight: 700; }
 .icon-button { width: 30px; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 4px; color: var(--green); background: var(--surface); font-size: 19px; cursor: pointer; }
 .page-title { font-weight: 650; overflow-wrap: anywhere; }
 .page-url { margin-top: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.action-status { margin-top: 8px; color: var(--green); font-size: 12px; overflow-wrap: anywhere; }
+.action-status.error { color: var(--red); }
 .page-excerpt { max-height: 72px; margin-top: 10px; overflow: auto; color: #45534d; font-size: 12px; white-space: pre-wrap; }
 .elements { display: grid; gap: 5px; margin-top: 12px; }
 .element-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 4px 5px 4px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }

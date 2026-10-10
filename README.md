@@ -22,7 +22,7 @@ Leave the backend running at `http://127.0.0.1:8000`.
 3. Select **Load unpacked** and choose this repository's `extension` folder.
 4. Open a regular website tab where you are signed in, such as your Canvas course.
 5. Click the Orion extension icon to open the side panel.
-6. Select **Observe this tab** to list visible links and buttons. Select **Click** beside an item to activate it.
+6. Select **Observe this tab** and grant Orion website access when Chrome prompts. It can then list visible links and buttons. Select **Click** beside an item to activate it.
 7. Select **Test connection**. A successful response confirms the side panel reached FastAPI.
 
 The extension uses `activeTab` and injects its content script only after you use the panel. It does not have persistent access to every website. Chrome internal pages, including `chrome://extensions`, cannot be inspected.

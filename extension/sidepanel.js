@@ -2,6 +2,7 @@ const observeButton = document.querySelector("#observe-button");
 const backendButton = document.querySelector("#backend-button");
 const pageTitle = document.querySelector("#page-title");
 const pageUrl = document.querySelector("#page-url");
+const actionStatus = document.querySelector("#action-status");
 const pageExcerpt = document.querySelector("#page-excerpt");
 const elementsContainer = document.querySelector("#elements");
 const statusText = document.querySelector("#status");
@@ -9,10 +10,15 @@ const statusText = document.querySelector("#status");
 let currentObservation = null;
 const confirmationRequired = /\b(submit|send|delete|remove|publish|purchase|pay|drop|enroll|unsubscribe|cancel|confirm)\b/i;
 
+function setActionStatus(message, isError = false) {
+  actionStatus.textContent = message;
+  actionStatus.classList.toggle("error", isError);
+}
+
 async function sendToActiveTab(message) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !/^https?:/.test(tab.url || "")) {
-    throw new Error("Open a regular website tab to use Orion.");
+  if (!tab?.id) {
+    throw new Error("No active browser tab is available.");
   }
 
   await chrome.scripting.executeScript({
@@ -61,14 +67,24 @@ function renderObservation(observation) {
 
 async function observePage() {
   observeButton.disabled = true;
-  statusText.textContent = "Inspecting active tab…";
+  setActionStatus("Inspecting the active tab…");
 
   try {
+    const siteAccessGranted = await chrome.permissions.request({
+      origins: ["http://*/*", "https://*/*"],
+    });
+    if (!siteAccessGranted) {
+      throw new Error("Grant Orion site access in Chrome to inspect this page.");
+    }
+
     const response = await sendToActiveTab({ type: "observe" });
     if (!response?.ok) throw new Error(response?.error || "Could not inspect this page.");
     renderObservation(response.observation);
+    setActionStatus(`Observed ${response.observation.elements.length} visible controls.`);
     statusText.textContent = "Page observed.";
   } catch (error) {
+    console.error("Orion could not observe the active tab:", error);
+    setActionStatus(`Could not inspect the active tab: ${error.message}`, true);
     statusText.textContent = error.message;
   } finally {
     observeButton.disabled = false;
@@ -82,14 +98,16 @@ async function clickElement(index) {
     if (!accepted) return;
   }
 
-  statusText.textContent = `Clicking element ${index}…`;
+  setActionStatus(`Clicking element ${index}…`);
 
   try {
     const response = await sendToActiveTab({ type: "click", index });
     if (!response?.ok) throw new Error(response?.error || "Could not click that element.");
-    statusText.textContent = "Clicked. Refreshing the page observation…";
+    setActionStatus("Clicked. Refreshing the page observation…");
     window.setTimeout(observePage, 900);
   } catch (error) {
+    console.error("Orion could not click the page element:", error);
+    setActionStatus(`Could not click that element: ${error.message}`, true);
     statusText.textContent = `${error.message} Re-observing…`;
     window.setTimeout(observePage, 900);
   }
