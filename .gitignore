@@ -1,17 +1,28 @@
-# Python
+﻿# Python
+venv/
 .venv/
-models/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.log
 
-# Secrets
+# Environment & Keys
 .env
-**/.env
+.env.local
+*.env
 
-# Browser authentication
-.orion_chrome_profile/
-**/playwright/.auth/
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
 
-# Generated files
-*.png
-.pytest_cache/
+# Tauri / Rust
+frontend/src-tauri/target/
+
+# System & Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

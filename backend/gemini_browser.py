@@ -16,7 +16,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 # ============================================================
 
 ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
+load_dotenv(ROOT / ".env", override=True)
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
@@ -33,6 +33,7 @@ ALLOWED_HOSTS = {
 
 MAX_ACTIONS = 15
 MAX_RETRIES = 3
+FALLBACK_MODEL = "gemini-3.1-flash-lite"
 
 SYSTEM_PROMPT = """
 You are ORION, an autonomous browser assistant.
@@ -75,37 +76,49 @@ client = genai.Client(
 )
 
 
+
 def generate_with_retry(contents, config):
-    """
-    Retry temporary Gemini failures with exponential backoff.
-    The SDK can also retry internally.
-    """
+    models = list(dict.fromkeys([MODEL, FALLBACK_MODEL]))
 
-    for attempt in range(MAX_RETRIES):
-        try:
-            return client.models.generate_content(
-                model=MODEL,
-                contents=contents,
-                config=config,
-            )
+    for model in models:
+        for attempt in range(MAX_RETRIES):
+            try:
+                print(f"\n[AI] Using model: {model}")
 
-        except errors.APIError as exc:
-            code = getattr(exc, "code", None)
+                return client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config,
+                )
 
-            if code not in (429, 500, 502, 503, 504):
-                raise
+            except errors.APIError as exc:
+                code = getattr(exc, "code", None)
 
-            if attempt == MAX_RETRIES - 1:
-                raise
+                if code not in (429, 500, 502, 503, 504):
+                    raise
 
-            delay = min(2 ** attempt + random.random(), 10)
+                if attempt == MAX_RETRIES - 1:
+                    print(
+                        f"[AI] {model} unavailable. "
+                        "Trying fallback if available."
+                    )
+                    break
 
-            print(
-                f"\n[ORION] Gemini returned {code}. "
-                f"Retrying in {delay:.1f} seconds..."
-            )
+                delay = min(
+                    2 ** attempt + random.random(), 10
+                )
 
-            time.sleep(delay)
+                print(
+                    f"[AI] Error {code}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+
+                time.sleep(delay)
+
+    raise RuntimeError(
+        "All configured Gemini models are unavailable."
+    )
+
 
 
 # ============================================================
