@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Orion Microphone Access</title>
+    <link rel="stylesheet" href="sidepanel.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">O</div>
+      <div>
+        <h1>Orion</h1>
+        <p>MICROPHONE ACCESS</p>
+      </div>
+    </header>
+    <main class="permission-main">
+      <h2>Allow Orion to use your microphone</h2>
+      <p>Chrome will ask for microphone access for Orion. Audio is sent only to your local Vosk service.</p>
+      <button id="request-microphone" class="primary-button" type="button">Request microphone access</button>
+      <p id="permission-status" class="permission-status" role="status" aria-live="polite">Select the button to show Chrome's permission prompt.</p>
+    </main>
+    <script src="microphone-permission.js"></script>
+  </body>
+</html>

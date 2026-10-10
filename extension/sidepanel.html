@@ -17,6 +17,21 @@
     </header>
 
     <main>
+      <section class="voice-section" aria-labelledby="voice-heading">
+        <h2 id="voice-heading" class="visually-hidden">Voice control</h2>
+        <div id="voice-orb" class="voice-orb" data-state="off" aria-hidden="true">
+          <div id="voice-rays" class="voice-rays"></div>
+          <div class="voice-core">
+            <span class="voice-star">&#10022;</span>
+            <span class="voice-name">ORION</span>
+            <span id="voice-indicator" class="voice-indicator">OFF</span>
+          </div>
+        </div>
+        <button id="voice-button" class="primary-button voice-button" type="button" aria-pressed="false">Start listening</button>
+        <p id="voice-status" class="voice-status" role="status" aria-live="polite">Microphone off. Start listening to use voice commands.</p>
+        <button id="microphone-help-button" class="secondary-button" type="button">Open microphone setup</button>
+      </section>
+
       <section class="page-section" aria-labelledby="page-heading">
         <div class="section-heading">
           <h2 id="page-heading">Current page</h2>

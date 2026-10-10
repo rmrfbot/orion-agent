@@ -1,16 +1,20 @@
+import json
 from collections import deque
 from pathlib import Path
 from threading import Lock
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from vosk import KaldiRecognizer, Model
 
 from backend.agent import plan_action
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+VOSK_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "vosk-model-small-en-us-0.15"
+MAX_VOICE_AUDIO_BYTES = 512_000
 
 app = FastAPI(title="Orion Local API")
 
@@ -23,6 +27,8 @@ app.add_middleware(
 
 voice_commands = deque(maxlen=20)
 voice_commands_lock = Lock()
+vosk_model = None
+vosk_model_lock = Lock()
 
 
 class ExtensionCheck(BaseModel):
@@ -54,6 +60,36 @@ def extension_check(payload: ExtensionCheck):
 		"page_title": payload.title,
 		"element_count": payload.element_count,
 	}
+
+
+@app.post("/voice/transcribe")
+async def transcribe_voice(request: Request):
+	global vosk_model
+
+	pcm_audio = await request.body()
+	if not pcm_audio or len(pcm_audio) % 2:
+		raise HTTPException(status_code=422, detail="Expected non-empty 16-bit PCM audio.")
+	if len(pcm_audio) > MAX_VOICE_AUDIO_BYTES:
+		raise HTTPException(status_code=413, detail="Voice segment is too large.")
+
+	try:
+		sample_rate = int(request.headers.get("x-audio-sample-rate", "16000"))
+	except ValueError as error:
+		raise HTTPException(status_code=400, detail="Invalid audio sample rate.") from error
+	if sample_rate != 16000:
+		raise HTTPException(status_code=400, detail="Audio must be resampled to 16000 Hz.")
+
+	if vosk_model is None:
+		with vosk_model_lock:
+			if vosk_model is None:
+				if not VOSK_MODEL_PATH.is_dir():
+					raise HTTPException(status_code=503, detail="Local Vosk model is missing.")
+				vosk_model = Model(str(VOSK_MODEL_PATH))
+
+	recognizer = KaldiRecognizer(vosk_model, sample_rate)
+	recognizer.AcceptWaveform(pcm_audio)
+	transcript = json.loads(recognizer.FinalResult()).get("text", "")
+	return {"text": transcript}
 
 
 @app.post("/voice/command")
