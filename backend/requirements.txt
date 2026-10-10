@@ -5,3 +5,7 @@ elevenlabs
 python-dotenv
 python-multipart
 playwright
+numpy
+sounddevice
+PyQt6
+vosk
