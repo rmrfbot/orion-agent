@@ -1,0 +1,66 @@
+:root {
+  color-scheme: light;
+  --ink: #18211f;
+  --muted: #64716c;
+  --line: #dce4df;
+  --paper: #f5f7f2;
+  --surface: #ffffff;
+  --green: #22634e;
+  --green-soft: #dcece3;
+  --red: #b44138;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 280px;
+  color: var(--ink);
+  background: var(--paper);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 16px;
+  color: #f6f8f4;
+  background: var(--green);
+}
+
+.brand-mark {
+  display: grid;
+  width: 36px;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid #ffffff80;
+  border-radius: 50%;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.topbar h1, .topbar p, h2, p { margin: 0; }
+.topbar h1 { font-size: 18px; line-height: 1.15; }
+.topbar p { margin-top: 3px; color: #c8dfd2; font-size: 10px; font-weight: 700; }
+.connection-dot { width: 8px; aspect-ratio: 1; margin-left: auto; border-radius: 50%; background: #a9d7b8; }
+
+main { padding: 16px; }
+.page-section { min-height: 210px; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+h2 { font-size: 13px; font-weight: 700; }
+.icon-button { width: 30px; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 4px; color: var(--green); background: var(--surface); font-size: 19px; cursor: pointer; }
+.page-title { font-weight: 650; overflow-wrap: anywhere; }
+.page-url { margin-top: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.page-excerpt { max-height: 72px; margin-top: 10px; overflow: auto; color: #45534d; font-size: 12px; white-space: pre-wrap; }
+.elements { display: grid; gap: 5px; margin-top: 12px; }
+.element-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 4px 5px 4px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.element-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.click-button { border: 0; border-radius: 3px; padding: 5px 8px; color: var(--green); background: var(--green-soft); font: inherit; font-size: 11px; cursor: pointer; }
+.empty-state { color: var(--muted); font-size: 12px; }
+
+.backend-section { display: grid; gap: 12px; margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+.backend-section p { margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.primary-button { min-height: 38px; border: 0; border-radius: 4px; padding: 0 12px; color: white; background: var(--green); font: inherit; font-weight: 650; cursor: pointer; }
+button:disabled { opacity: .55; cursor: wait; }
+button:focus-visible { outline: 3px solid #d48748; outline-offset: 2px; }

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Orion</title>
+    <link rel="stylesheet" href="sidepanel.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">O</div>
+      <div>
+        <h1>Orion</h1>
+        <p>STUDY COMPANION</p>
+      </div>
+      <span class="connection-dot" title="Local extension"></span>
+    </header>
+
+    <main>
+      <section class="page-section" aria-labelledby="page-heading">
+        <div class="section-heading">
+          <h2 id="page-heading">Current page</h2>
+          <button id="observe-button" class="icon-button" type="button" title="Observe this tab" aria-label="Observe this tab">↻</button>
+        </div>
+        <p id="page-title" class="page-title">Open a page, then observe it.</p>
+        <p id="page-url" class="page-url"></p>
+        <p id="page-excerpt" class="page-excerpt"></p>
+        <div id="elements" class="elements" aria-live="polite"></div>
+      </section>
+
+      <section class="backend-section" aria-labelledby="backend-heading">
+        <div>
+          <h2 id="backend-heading">Backend connection</h2>
+          <p id="status" role="status" aria-live="polite">Not checked yet</p>
+        </div>
+        <button id="backend-button" class="primary-button" type="button">Test connection</button>
+      </section>
+    </main>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
