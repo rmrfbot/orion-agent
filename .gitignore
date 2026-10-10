@@ -1,16 +1,282 @@
-# Python
-.venv/
-__pycache__/
-*.pyc
 
-# Secrets
+# ============================================================
+# ORION — AI Browser Agent
+# Git Ignore Configuration
+# ============================================================
+
+
+# ============================================================
+# 1. ENVIRONMENT VARIABLES & SECRETS
+# ============================================================
+
 .env
+.env.*
+!.env.example
+!.env.sample
+
 **/.env
+**/.env.*
+!**/.env.example
+!**/.env.sample
 
-# Browser authentication
-.orion_chrome_profile/
-**/playwright/.auth/
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+service-account*.json
 
-# Generated files
-*.png
+
+# ============================================================
+# 2. PYTHON VIRTUAL ENVIRONMENTS
+# ============================================================
+
+.venv/
+venv/
+env/
+ENV/
+virtualenv/
+
+
+# ============================================================
+# 3. PYTHON CACHE & COMPILED FILES
+# ============================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.hypothesis/
+
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+.tox/
+.nox/
+
+
+# ============================================================
+# 4. PYTHON BUILD ARTIFACTS
+# ============================================================
+
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+*.log
+
+
+# ============================================================
+# 5. NODE.JS / REACT / TYPESCRIPT
+# ============================================================
+
+node_modules/
+.pnpm-store/
+.npm/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+.next/
+.nuxt/
+.svelte-kit/
+
+.vite/
+.turbo/
+
+*.tsbuildinfo
+.eslintcache
+
+# Frontend build output
+frontend/dist/
+frontend/build/
+frontend/coverage/
+
+
+# ============================================================
+# 6. PLAYWRIGHT BROWSER AUTOMATION
+# ============================================================
+
+# Playwright test artifacts
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# Authentication and browser sessions
+playwright/.auth/
+**/playwright/.auth/
+storage_state.json
+**/storage_state.json
+
+# Persistent Chrome profiles
+.orion_chrome_profile/
+**/.orion_chrome_profile/
+chrome_profile/
+browser_profile/
+user_data/
+
+# Browser cookies and local session data
+cookies.json
+session.json
+auth_state.json
+
+# Browser debugging artifacts
+trace.zip
+traces/
+screenshots/
+recordings/
+videos/
+downloads/
+
+
+# ============================================================
+# 7. AI / GEMINI / ELEVENLABS
+# ============================================================
+
+# Local AI credentials
+google_credentials.json
+gemini_credentials.json
+elevenlabs_credentials.json
+
+# Temporary AI data
+ai_cache/
+model_cache/
+.cache/
+
+# Local generated audio
+generated_audio/
+audio_output/
+*.mp3
+*.wav
+*.ogg
+*.flac
+
+
+# ============================================================
+# 8. SQLITE & LOCAL DATABASE FILES
+# ============================================================
+
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Database exports
+*.sql.gz
+database_backups/
+
+
+# ============================================================
+# 9. USER DOCUMENTS & TEMPORARY DATA
+# ============================================================
+
+uploads/
+temp/
+tmp/
+runtime/
+artifacts/
+
+# Downloaded or extracted course materials
+course_materials/
+lecture_notes/
+extracted_documents/
+
+
+# ============================================================
+# 10. DOCKER
+# ============================================================
+
+docker-compose.override.yml
+compose.override.yml
+
+# Local container data
+docker-data/
+volumes/
+
+
+# ============================================================
+# 11. VERCEL & DEPLOYMENT
+# ============================================================
+
+.vercel/
+.netlify/
+.output/
+
+
+# ============================================================
+# 12. VS CODE / JETBRAINS
+# ============================================================
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+
+.idea/
+*.iml
+
+
+# ============================================================
+# 13. OPERATING SYSTEM FILES
+# ============================================================
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.nfs*
+
+
+# ============================================================
+# 14. TEMPORARY EDITOR FILES
+# ============================================================
+
+*.swp
+*.swo
+*.bak
+*.tmp
+*.temp
+*.orig
+
+
+# ============================================================
+# 15. ORION DEVELOPMENT TEST ARTIFACTS
+# ============================================================
+
+browser_test.png
+debug_screenshot.png
+debug_page.html
+
+# Generated test outputs
+test_output/
+debug_output/
+logs/
+
+# ============================================================
+# END OF ORION .gitignore
+# ============================================================
