@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ORION Browser Bridge",
+  "version": "0.1.0",
+  "description": "Connects your existing Chrome browser to ORION Desktop.",
+  "permissions": [
+    "tabs",
+    "activeTab"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "ORION Browser Bridge"
+  }
+}
