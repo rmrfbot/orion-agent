@@ -2,6 +2,22 @@
 
 ORION runs browser commands in a dedicated Chrome session through the local API.
 
+Desktop builds automatically read `ORION_LOCAL_TOKEN` from the project-root
+`.env` (or the build environment when it is absent there). Only this local token
+is embedded in the native executable; Gemini and other `.env` credentials are
+not bundled. Rust attaches the token to requests to `http://127.0.0.1:8000`, so
+the desktop app needs no token entry and does not rely on the Vite dev proxy.
+The backend must be running with the same token. Rebuild the desktop app after
+changing it. An installer carries this local credential, so it is intended for
+your matching backend configuration. Browser-only development retains manual
+token entry.
+
+Build the configured desktop installer from `frontend` with:
+
+```powershell
+npm.cmd exec tauri build
+```
+
 Simple searches use a direct route without model calls:
 
 - `search for jazz on YouTube`

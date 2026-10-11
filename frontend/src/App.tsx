@@ -70,7 +70,7 @@ const initialMessage: Message = {
 };
 
 function App() {
-  const desktop = !!desktopCore();
+  const [desktop, setDesktop] = useState(() => !!desktopCore());
   const [token, setToken] = useState("");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
@@ -83,6 +83,12 @@ function App() {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
+
+  useEffect(() => {
+    const detect = () => setDesktop(!!desktopCore());
+    window.addEventListener("load", detect, { once: true });
+    return () => window.removeEventListener("load", detect);
+  }, []);
 
   // ======================================================
   // BACKEND HEALTH MONITOR

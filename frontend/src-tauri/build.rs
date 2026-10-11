@@ -12,8 +12,15 @@ fn main() {
         Ok(contents) => build_config::local_token(&contents),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => panic!("Cannot read the project's .env for desktop configuration"),
-    }.or_else(|| std::env::var("ORION_LOCAL_TOKEN").ok().filter(|value| !value.trim().is_empty()))
-     .expect("Set ORION_LOCAL_TOKEN in the root .env or build environment before building ORION Desktop");
+    }
+    .or_else(|| {
+        std::env::var("ORION_LOCAL_TOKEN")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    })
+    .expect(
+        "Set ORION_LOCAL_TOKEN in the root .env or build environment before building ORION Desktop",
+    );
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     std::fs::write(output.join("orion-local-token.txt"), token.trim())
         .expect("Cannot prepare desktop connection configuration");
