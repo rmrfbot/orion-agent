@@ -4,7 +4,6 @@ import os
 
 import time
 
-import random
 
 import ipaddress
 
@@ -23,10 +22,12 @@ from google.genai import types, errors
 from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
 
 try:
-    from backend.fast_commands import search_command
+    from backend.fast_commands import search_command, direct_command, video_request
+    from backend.browser_io import call_with_browser_events
     from backend.performance import measure
 except ModuleNotFoundError:
-    from fast_commands import search_command
+    from fast_commands import search_command, direct_command, video_request
+    from browser_io import call_with_browser_events
     from performance import measure
 
 
@@ -65,13 +66,14 @@ if not API_KEY:
 
 
 
-client = genai.Client(api_key=API_KEY)
+MODEL_TIMEOUT_MS = max(1000, int(os.getenv('ORION_MODEL_TIMEOUT_MS', '10000')))
+client = genai.Client(api_key=API_KEY, http_options=types.HttpOptions(
+    timeout=MODEL_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)))
 
 
 
 MAX_STEPS = 18
 
-MAX_RETRIES = 2
 
 
 
@@ -520,7 +522,7 @@ class UniversalBrowser:
 
                 wait_until="domcontentloaded",
 
-                timeout=25000,
+                timeout=4000,
 
             )
 
@@ -560,7 +562,7 @@ class UniversalBrowser:
 
                 wait_until="domcontentloaded",
 
-                timeout=25000,
+                timeout=4000,
 
             )
 
@@ -802,7 +804,7 @@ class UniversalBrowser:
 
             print(f"\n[CLICK] {index}: {item['label']}")
 
-            loc.click(timeout=8000)
+            loc.click(timeout=4000)
 
 
 
@@ -812,7 +814,7 @@ class UniversalBrowser:
 
                     "domcontentloaded",
 
-                    timeout=5000,
+                    timeout=1200,
 
                 )
 
@@ -932,13 +934,13 @@ class UniversalBrowser:
 
 
 
-            item["locator"].fill(text, timeout=8000)
+            item["locator"].fill(text, timeout=4000)
 
 
 
             print(f"\n[TYPE] {index}: {text}")
 
-            return self.observe_page()
+            return {"typed": True, "index": index, "text": text}
 
 
 
@@ -978,7 +980,7 @@ class UniversalBrowser:
 
             item["locator"].press(
 
-                "Enter", timeout=8000
+                "Enter", timeout=4000
 
             )
 
@@ -990,7 +992,7 @@ class UniversalBrowser:
 
                     "domcontentloaded",
 
-                    timeout=5000,
+                    timeout=1200,
 
                 )
 
@@ -1034,9 +1036,8 @@ class UniversalBrowser:
 
 
 
-            page.mouse.wheel(0, distance)
+            page.evaluate("distance => window.scrollBy({top: distance, behavior: 'instant'})", distance)
 
-            page.wait_for_timeout(400)
 
 
 
@@ -1145,6 +1146,20 @@ class UniversalBrowser:
         except Exception as exc:
             return {'playing': False, 'state': 'error', 'reason': str(exc)}
 
+    def youtube_pause(self):
+        try:
+            page = self.page()
+            if not host_matches(get_host(page.url), 'youtube.com'):
+                return {'error': 'Not on YouTube.'}
+            return page.evaluate("""() => {
+                const video = document.querySelector('video');
+                if (!video) return {error: 'No video is available.'};
+                video.pause();
+                return {paused: video.paused, playing: false, state: 'paused'};
+            }""")
+        except Exception as exc:
+            return {'error': str(exc)}
+
     def youtube_skip_ad(self):
         try:
             page = self.page()
@@ -1154,7 +1169,7 @@ class UniversalBrowser:
                 result = page.evaluate("""() => {
                     const monitor = window.__orionSkipWatcher;
                     const skipped = !!monitor?.skip?.();
-                    return {skipped, metrics: monitor?.snapshot?.() || null};
+                    return {skipped, metrics: monitor?.snapshot?.(3) || null};
                 }""")
             return {**result, 'message': 'Dispatched YouTube Skip Ad click.' if result['skipped']
                     else 'No available Skip Ad button, or a click is awaiting confirmation.'}
@@ -1194,6 +1209,7 @@ class UniversalBrowser:
             "youtube_search": self.youtube_search,
             "youtube_open_video": self.youtube_open_video,
             "youtube_play": self.youtube_play,
+            "youtube_pause": self.youtube_pause,
             "youtube_skip_ad": self.youtube_skip_ad,
 
         }
@@ -1265,6 +1281,7 @@ INDEX_ARG = {"index": {"type": "integer"}}
 
 
 TOOLS = [
+    tool("youtube_pause", "Pause the current YouTube video and verify it is paused."),
     tool("media_state", "Read current site, YouTube playback, ad and skip availability."),
     tool(
         "youtube_search",
@@ -1491,100 +1508,19 @@ Never claim success without evidence.
 
 
 def generate(contents, config):
-
-    models = [MODEL]
-
-
-
-    if FALLBACK and FALLBACK != MODEL:
-
-        models.append(FALLBACK)
-
-
-
+    models = [MODEL] + ([FALLBACK] if FALLBACK and FALLBACK != MODEL else [])
     last_error = None
-
-
-
     for model in models:
-
-        for attempt in range(MAX_RETRIES):
-
-            try:
-
-                print(f"\n[GEMINI] Model: {model}")
-
-
-
-                with measure('gemini.request'):
-                    return client.models.generate_content(
-                        model=model,
-                        contents=contents,
-                        config=config,
-                    )
-
-
-
-            except errors.APIError as exc:
-
-                last_error = exc
-
-
-
-                if exc.code not in (
-
-                    429, 500, 502, 503, 504
-
-                ):
-
-                    raise
-
-
-
-                if attempt == MAX_RETRIES - 1:
-
-                    print(
-
-                        f"[MODEL UNAVAILABLE] {model}"
-
-                    )
-
-                    break
-
-
-
-                delay = (
-
-                    1.5 * (2 ** attempt)
-
-                    + random.random()
-
-                )
-
-
-
-                print(
-
-                    f"[RETRY] Error {exc.code}; "
-
-                    f"waiting {delay:.1f}s"
-
-                )
-
-
-
-                time.sleep(delay)
-
-
-
-    raise RuntimeError(
-
-        f"All configured Gemini models failed: {last_error}"
-
-    )
-
-
-
+        try:
+            print(f"\n[GEMINI] Model: {model}")
+            with measure('gemini.request'):
+                return client.models.generate_content(model=model, contents=contents, config=config)
+        except errors.APIError as exc:
+            if exc.code not in (429, 500, 502, 503, 504):
+                raise
+            last_error = exc
+            # One attempt per model; the configured fallback is tried immediately.
+    raise RuntimeError(f'Configured Gemini models unavailable: {last_error}')
 
 
 # ============================================================
@@ -1676,6 +1612,31 @@ def run_agent(browser, instruction):
 
     try:
 
+        direct = direct_command(instruction)
+        if direct:
+            name, args = direct
+            with measure(f'direct.{name}', timings):
+                result = browser.execute(name, args)
+            actions_taken = 1
+            if result.get('error'):
+                tool_errors.append({'tool': name, 'message': str(result['error'])})
+                return finish('incomplete', str(result['error']))
+            if name == 'youtube_skip_ad':
+                message = result.get('message', 'No available Skip Ad control.')
+            elif name in ('youtube_play', 'youtube_open_video'):
+                playback = result.get('playback', result)
+                state = playback.get('state', 'unverified')
+                message = f"Video state: {state}."
+                if not playback.get('playing') or playback.get('ad_playing'):
+                    return finish('incomplete', message)
+            elif name == 'youtube_pause':
+                message = 'Video paused.' if result.get('paused') else 'Could not verify pause.'
+            elif name == 'list_tabs':
+                message = '\n'.join(f"{tab['index'] + 1}. {tab['title']}" for tab in result.get('tabs', [])) or 'No open tabs.'
+            else:
+                message = {'navigate': 'Website opened.', 'open_tab': 'Website opened in a new tab.',
+                    'switch_tab': 'Switched tab.', 'close_tab': 'Closed tab.', 'scroll_page': 'Page scrolled.'}[name]
+            return finish('finished', message)
         command = search_command(instruction, browser.page().url)
         if command:
             with measure('search.direct', timings):
@@ -1689,8 +1650,16 @@ def run_agent(browser, instruction):
                 message += '\n' + '\n'.join(
                     f"{item['index'] + 1}. {item['title']}" for item in result['results'][:5])
             return finish('finished', message)
-        with measure('page.initial_observation', timings):
-            initial_state = browser.observe_page()
+        video_query = video_request(instruction)
+        if video_query:
+            with measure('video.search', timings):
+                initial_state = browser.execute('youtube_search', {'query': video_query})
+            actions_taken += 1
+            if initial_state.get('error'):
+                return finish('incomplete', str(initial_state['error']))
+        else:
+            with measure('page.initial_observation', timings):
+                initial_state = browser.observe_page()
 
 
 
@@ -1731,12 +1700,14 @@ def run_agent(browser, instruction):
             system_instruction=SYSTEM_PROMPT,
 
             temperature=0.2,
+            max_output_tokens=1024,
 
             tools=[
 
                 types.Tool(
 
-                    function_declarations=TOOLS
+                    function_declarations=([declaration for declaration in TOOLS
+                        if declaration.name == 'youtube_open_video'] if video_query else TOOLS)
 
                 )
 
@@ -1757,9 +1728,12 @@ def run_agent(browser, instruction):
 
 
         while actions_taken < MAX_STEPS:
+            if time.monotonic() - started_at >= 30:
+                return finish('incomplete', 'The task reached its time budget. Completed actions were not replayed.')
 
             with measure('gemini.turn', timings):
-                response = generate(contents=conversation, config=config)
+                response = call_with_browser_events(
+                    lambda: generate(contents=conversation, config=config), browser.context)
 
 
 
@@ -1778,6 +1752,8 @@ def run_agent(browser, instruction):
 
 
             model_content = response.candidates[0].content
+            if str(getattr(response.candidates[0], 'finish_reason', '')).endswith('MAX_TOKENS'):
+                return finish('incomplete', 'The model response was truncated; no partial action was executed.')
 
 
 
@@ -1855,7 +1831,7 @@ def run_agent(browser, instruction):
 
 
 
-                if actions_taken >= MAX_STEPS:
+                if actions_taken >= MAX_STEPS or time.monotonic() - started_at >= 30:
 
                     result = {
 
@@ -1877,6 +1853,13 @@ def run_agent(browser, instruction):
 
 
                     actions_taken += 1
+                    if video_query and name == 'youtube_open_video':
+                        if result.get('error'):
+                            return finish('incomplete', str(result['error']))
+                        playback = result.get('playback', {})
+                        state = playback.get('state', 'unverified')
+                        outcome = 'finished' if playback.get('playing') and not playback.get('ad_playing') else 'incomplete'
+                        return finish(outcome, f"Opened {result.get('selected_title', 'video')}. Playback: {state}.")
 
 
 

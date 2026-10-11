@@ -3,7 +3,7 @@ async ({start = false, interval_ms = 350, verify = true} = {}) => {
   const began = performance.now();
   const video = document.querySelector('video');
   const adPlaying = () => !!document.querySelector('.html5-video-player.ad-showing');
-  const skipMetrics = () => window.__orionSkipWatcher?.snapshot?.() ||
+  const skipMetrics = () => window.__orionSkipWatcher?.snapshot?.(3) ||
     {enabled: false, skip_available: false, samples: []};
   if (!video) return {playing: false, state: 'opened', video_present: false,
     ad_playing: adPlaying(), verification_ms: performance.now() - began, skip_metrics: skipMetrics()};

@@ -56,3 +56,10 @@ observation labels active playback as unverified to avoid adding a fixed wait.
 
 See [the latency audit and measured benchmarks](docs/latency-optimization.md)
 for the execution path, measurement limits, validation, and changed files.
+
+The latest [responsiveness fixes](docs/responsiveness.md) keep routed browser
+requests moving while the worker is idle or waiting on Gemini. Explicit commands
+such as `skip the ad`, `pause`, `play`, `scroll down`, `switch to tab 2`, and
+`open YouTube` run locally. `play jazz on YouTube` searches locally, uses one
+model call to choose a result, and verifies playback locally. Tab/video numbers
+in these explicit commands start at 1.

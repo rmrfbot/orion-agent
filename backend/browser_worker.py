@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from playwright.sync_api import sync_playwright
 from backend.performance import measure, logger
+from backend.browser_io import pump_context
 
 ROOT = Path(__file__).resolve().parent.parent
 PROFILE = ROOT / ".orion_chrome_profile"
@@ -212,7 +213,7 @@ class BrowserWorker:
             else:
                 page = context.new_page()
                 base.active_page = page
-                page.goto(START_URL, wait_until="domcontentloaded", timeout=20000)
+                page.goto(START_URL, wait_until="commit", timeout=4000)
 
             self.safe_browser = APISafeBrowser(base)
             base.approve_domain = self.safe_browser.approve_domain
@@ -264,7 +265,14 @@ class BrowserWorker:
                 print("[WORKER] Ready. Chrome will open with the first task.")
                 try:
                     while True:
-                        task_id = self.task_queue.get()
+                        if self.context is None:
+                            task_id = self.task_queue.get()
+                        else:
+                            try:
+                                task_id = self.task_queue.get_nowait()
+                            except queue.Empty:
+                                pump_context(self.context, 25)
+                                continue
                         try:
                             if task_id is None:
                                 break

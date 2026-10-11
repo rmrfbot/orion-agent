@@ -62,7 +62,7 @@ class APICompatibilityTests(unittest.TestCase):
         final = Mock(candidates=[Mock(content=types.Content(role='model', parts=[
             types.Part.from_text(text='Video is buffering.')]))], function_calls=[], text='Video is buffering.')
         generate.side_effect = [first, final]
-        result = run_agent(browser, 'play the current video')
+        result = run_agent(browser, 'Inspect the current video and explain its playback state')
         self.assertEqual(result['message'], 'Video is buffering.')
         self.assertEqual(result['actions_taken'], 1)
         self.assertEqual(result['tool_errors'], [])

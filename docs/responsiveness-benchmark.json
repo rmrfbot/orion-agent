@@ -1,0 +1,25 @@
+{
+  "environment": {
+    "chrome": "154.0.8037.98",
+    "network": "local mocked routes",
+    "model": "simulated 250ms HTTP wait; no live inference"
+  },
+  "blocking_before": {
+    "n": 20,
+    "p50_ms": 284.55,
+    "p95_ms": 295.5,
+    "max_ms": 295.7
+  },
+  "pumped_after": {
+    "n": 20,
+    "p50_ms": 30.55,
+    "p95_ms": 35.8,
+    "max_ms": 42.1
+  },
+  "css_skip_after": {
+    "n": 30,
+    "p50_ms": 27.45,
+    "p95_ms": 44.5,
+    "max_ms": 45.5
+  }
+}

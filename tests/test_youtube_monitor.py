@@ -160,6 +160,11 @@ class MonitorTests(unittest.TestCase):
         route.abort.assert_called_once()
         route.continue_.assert_not_called()
 
+    def test_scroll_does_not_depend_on_animation_frames(self):
+        self.page.evaluate("() => { document.body.style.minHeight = '5000px'; window.requestAnimationFrame = () => 0; }")
+        self.assertNotIn('error', self.browser.scroll_page('down'))
+        self.assertGreater(self.page.evaluate('() => window.scrollY'), 0)
+
     def test_browser_recovery_stays_on_owner_thread(self):
         worker = BrowserWorker()
         owner = threading.get_ident()

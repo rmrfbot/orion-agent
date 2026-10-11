@@ -2,7 +2,7 @@
 (function install() {
   if (!/(^|\.)youtube\.com$/.test(location.hostname)) return;
   const previous = window.__orionSkipWatcher;
-  if (previous?.version === 2 && !previous.stopped) return;
+  if (previous?.version === 3 && !previous.stopped) return;
   previous?.stop?.();
 
   const selector = '.ytp-ad-skip-button,.ytp-ad-skip-button-modern,' +
@@ -45,6 +45,8 @@
         !eligible(button) ? 'control_unavailable' :
         sample.ad_before && !adPlaying() ? 'ad_ended' : null;
       if (result || now() - sample.clicked_at_ms >= 1000) {
+        const state = states.get(button);
+        if (state && result) state.handled = true;
         sample.confirmed = !!result;
         sample.confirmation = result || 'not_confirmed';
         sample.confirmation_ms = now() - sample.clicked_at_ms;
@@ -72,12 +74,13 @@
         states.set(button, state);
       }
       if (!eligible(button)) {
+        state.handled = false;
         state.attempts = 0;
         state.last_click_ms = -Infinity;
         continue;
       }
       // Per-control backoff prevents spam without delaying a different ad's control.
-      if (started - state.last_click_ms < 1000 || state.attempts >= 3) continue;
+      if (state.handled || started - state.last_click_ms < 1000 || state.attempts >= 3) continue;
       const detected = now();
       const sample = {source, first_seen_ms: state.first_seen_ms,
         eligible_observed_at_ms: detected, detection_ms: detected - started,
@@ -120,11 +123,13 @@
     }, {once: true});
   };
   const monitor = {
-    version: 2, get stopped() { return stopped; }, stop,
+    version: 3, get stopped() { return stopped; }, stop,
+    tick: () => !!check('driver'),
     skip: () => { scan(); return !!check('manual'); },
-    snapshot: () => ({enabled: !stopped, counters: {...counters},
+    snapshot: (limit = 100) => ({enabled: !stopped, counters: {...counters},
       skip_available: !stopped && Array.from(candidates).some(eligible),
-      samples: samples.map(({button, ...sample}) => ({...sample}))})
+      samples: samples.slice(-Math.max(1, Math.min(100, limit)))
+        .map(({button, ...sample}) => ({...sample}))})
   };
   window.__orionSkipWatcher = monitor;
   const start = () => {
@@ -158,7 +163,7 @@
     timer = setInterval(() => {
       if (now() - lastScan >= 1000) scan();
       check('fallback');
-    }, 100);
+    }, 50);
     document.addEventListener('yt-navigate-finish', navigation);
     window.addEventListener('pagehide', suspend);
   };
