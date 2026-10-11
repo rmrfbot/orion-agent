@@ -105,10 +105,23 @@ Python: existing HTTPX 0.28.1 is explicitly declared in requirements-voice.txt; 
 
 ## Validation and remaining demo risks
 
-Validation passed: 59 Python tests, 21 frontend controller tests, eight Rust tests, TypeScript/Vite production build, changed-file ESLint and Git whitespace checks. Cargo compilation also validated Tauri configuration. Automated ElevenLabs requests are mocked. Native Windows checks confirmed compact visibility/always-on-top, expansion with normal decorations, repeated switches with stable dimensions, minimizing, and actual Ctrl+Shift+Space restoration. The normal npx.cmd tauri dev command launched Vite and the native executable. No physical microphone was activated in GUI testing.
+Validation passed: 64 Python tests, 21 frontend controller tests, eight Rust tests, TypeScript/Vite production build, changed-file ESLint and Git whitespace checks. Cargo compilation also validated Tauri configuration. Automated ElevenLabs requests are mocked. Native Windows checks confirmed compact visibility/always-on-top, expansion with normal decorations, repeated switches with stable dimensions, minimizing, and actual Ctrl+Shift+Space restoration. The normal npx.cmd tauri dev command launched Vite and the native executable. No physical microphone was activated in GUI testing.
 
 Headless UI checks used a synthetic Web Audio microphone with real MediaRecorder and WAV conversion, mocked native speech APIs and mocked playback. They verified one submission, transcript preservation, response-before-audio behavior, focus and compact/expanded continuity. This is not a live microphone/provider/speaker test.
 
 Live configuration check: the user-provided key and voice ID were loaded by restarting FastAPI. Both authenticated localhost voice routes reached ElevenLabs, which returned HTTP 401 `missing_permissions`: the key lacks `text_to_speech` and `speech_to_text`. Enable both permissions in ElevenLabs, or replace the key with one that has both, then restart FastAPI if its value changes. No physical microphone or speaker was activated. Successful provider audio generation, transcription, voice/model access and physical microphone permissions remain unverified until these permissions are corrected. WebView2 codec/autoplay behavior can vary; failures retain typed-command access. Network, Chrome startup and speech-provider latency can exceed the existing warm-session five-second browser target. The existing local-demo credential/CSP setup remains unchanged; no installer or production security review is implied.
 
 Official contracts checked: [Scribe transcription](https://elevenlabs.io/docs/api-reference/speech-to-text/convert), [speech synthesis](https://elevenlabs.io/docs/api-reference/text-to-speech/convert), [Tauri IPC](https://v2.tauri.app/develop/calling-rust/), [global shortcuts](https://v2.tauri.app/plugin/global-shortcut/).
+
+## Repeat the integration checks
+
+With FastAPI and Vite running, run these from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe tests/check_hybrid_ui.py
+.\tests\check_native_hybrid.ps1
+```
+
+The UI check uses a synthetic microphone, real recording/WAV conversion, mocked native services and playback, and checks that the exact displayed response is synthesized. The Windows check requires the native desktop to be open; it normalizes expanded/compact mode before checking dimensions, always-on-top, minimize and the default global shortcut. It moves the window and pointer during testing. Neither check activates the physical microphone or sends paid speech requests.
+
+The refreshed responsiveness benchmark records 30 CSS-visibility skip trials, with 26 ms median, 42.7 ms p95 and 52.7 ms maximum eligibility-to-click latency. Routed browser requests completed in 111.9 ms p95 while simulated model calls were pumped, versus 399.9 ms with a blocking model wait. These are local fixtures measured alongside other checks, not live YouTube ad latency.
