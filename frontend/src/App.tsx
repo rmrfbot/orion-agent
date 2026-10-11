@@ -25,6 +25,7 @@ type TaskStatus =
   | "failed";
 
 type TaskResult = {
+  elapsed_ms?: number;
   outcome?: string;
   message?: string;
   actions_taken?: number;
@@ -204,7 +205,7 @@ function App() {
 
       // Poll task status until complete.
       while (Date.now() < deadline) {
-        await wait(1500);
+        await wait(250);
 
         finalTask = (await request(
           `/api/tasks/${created.task_id}`
@@ -518,6 +519,15 @@ function App() {
           <p className="section-label">
             EXECUTION
           </p>
+
+          <div className="metric-row">
+            <span>Execution time</span>
+            <strong>
+              {task?.result?.elapsed_ms != null
+                ? `${(task.result.elapsed_ms / 1000).toFixed(1)}s`
+                : "—"}
+            </strong>
+          </div>
 
           <div className="metric-row">
             <span>Actions performed</span>

@@ -20,7 +20,12 @@ from google import genai
 
 from google.genai import types, errors
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+
+try:
+    from backend.fast_commands import search_command
+except ModuleNotFoundError:
+    from fast_commands import search_command
 
 
 
@@ -73,6 +78,7 @@ START_URL = "https://www.wikipedia.org/"
 
 
 INITIAL_DOMAINS = {
+    "google.com",
 
     "wikipedia.org",
 
@@ -212,7 +218,7 @@ YOUTUBE_SKIP_SCRIPT = r"""
   ];
   let lastClick = 0;
   const trySkip = () => {
-    if (Date.now() - lastClick < 1300) return;
+    if (Date.now() - lastClick < 500) return;
     for (const selector of selectors) {
       const button = document.querySelector(selector);
       if (!button || button.disabled) continue;
@@ -232,7 +238,7 @@ YOUTUBE_SKIP_SCRIPT = r"""
       childList: true, subtree: true, attributes: true,
       attributeFilter: ['class', 'style', 'disabled']
     });
-    setInterval(trySkip, 1200);
+    setInterval(trySkip, 250);
   };
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start, {once:true});
@@ -274,6 +280,11 @@ class UniversalBrowser:
         context.route("**/*", self.guard_navigation)
         context.add_init_script(script=YOUTUBE_SKIP_SCRIPT)
         self.youtube_results = []
+        for existing_page in context.pages:
+            try:
+                existing_page.evaluate(YOUTUBE_SKIP_SCRIPT)
+            except Exception:
+                pass
 
 
 
@@ -416,172 +427,76 @@ class UniversalBrowser:
 
 
     def observe_page(self):
-
         page = self.page()
-
         self.reset_elements()
-
-
-
+        # A single browser round trip replaces hundreds of locator calls.
+        snapshot = page.evaluate("""selector => {
+            const elements = Array.from(document.querySelectorAll(selector))
+              .slice(0, 350).map((el, position) => {
+                const style = getComputedStyle(el);
+                if (!el.getClientRects().length || style.visibility === 'hidden' ||
+                    style.display === 'none') return null;
+                return {position, tag: el.tagName.toLowerCase(),
+                  label: (el.innerText || el.getAttribute('aria-label') ||
+                    el.getAttribute('placeholder') || el.getAttribute('title') ||
+                    el.getAttribute('value') || '').trim().slice(0, 100),
+                  href: el.getAttribute('href') || '', type: el.getAttribute('type') || '',
+                  role: el.getAttribute('role') || '', name: el.getAttribute('name') || '',
+                  editable: el.getAttribute('contenteditable') === 'true'};
+              }).filter(Boolean).slice(0, 70);
+            return {elements, title: document.title,
+              body: (document.body?.innerText || '').slice(0, 3500)};
+        }""", self.SELECTOR)
         candidates = page.locator(self.SELECTOR)
-
         lines = []
-
-
-
-        try:
-
-            count = min(candidates.count(), 350)
-
-
-
-            for i in range(count):
-
-                loc = candidates.nth(i)
-
-
-
-                try:
-
-                    if not loc.is_visible():
-
-                        continue
-
-
-
-                    details = loc.evaluate(
-
-                        """el => ({
-
-                            tag: el.tagName.toLowerCase(),
-
-                            label: (
-
-                                el.innerText ||
-
-                                el.getAttribute('aria-label') ||
-
-                                el.getAttribute('placeholder') ||
-
-                                el.getAttribute('title') ||
-
-                                el.getAttribute('value') ||
-
-                                ''
-
-                            ).trim().slice(0, 100),
-
-                            href: el.getAttribute('href') || '',
-
-                            type: el.getAttribute('type') || '',
-
-                            role: el.getAttribute('role') || '',
-
-                            name: el.getAttribute('name') || '',
-
-                            editable:
-
-                              el.getAttribute('contenteditable')
-
-                              === 'true'
-
-                        })"""
-
-                    )
-
-
-
-                    index = len(self.elements)
-
-
-
-                    self.elements.append({
-
-                        "locator": loc,
-
-                        **details
-
-                    })
-
-
-
-                    lines.append(
-
-                        f"{index}: "
-
-                        f"[{details['tag']}] "
-
-                        f"{details['label'] or '(unlabeled)'} "
-
-                        f"name={details['name']} "
-
-                        f"type={details['type']} "
-
-                        f"href={details['href'][:120]}"
-
-                    )
-
-
-
-                    if len(self.elements) >= 70:
-
-                        break
-
-
-
-                except Exception:
-
-                    continue
-
-
-
-        except Exception as exc:
-
-            lines.append(f"Inspection error: {exc}")
-
-
-
-        try:
-
-            body = page.locator("body").inner_text(
-
-                timeout=5000
-
-            )[:3500]
-
-        except Exception:
-
-            body = "(Unable to extract text)"
-
-
-
+        for details in snapshot['elements']:
+            position = details.pop('position')
+            index = len(self.elements)
+            self.elements.append({'locator': candidates.nth(position), **details})
+            lines.append(f"{index}: [{details['tag']}] {details['label'] or '(unlabeled)'} "
+                         f"name={details['name']} type={details['type']} href={details['href'][:120]}")
         self.observed_page = page
+        return {'observation': f"URL: {page.url}\nTitle: {snapshot['title']}\n"
+                f"Visible text:\n{snapshot['body']}\nInteractive elements:\n" + '\n'.join(lines),
+                'media': self.media_state()}
 
+    def media_state(self):
+        page = self.page()
+        if not host_matches(get_host(page.url), 'youtube.com'):
+            return {'site': get_host(page.url)}
+        return page.evaluate("""() => {
+            const video = document.querySelector('video');
+            const ad = !!document.querySelector('.html5-video-player.ad-showing');
+            const skip = Array.from(document.querySelectorAll(
+              '.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button'))
+              .some(el => el.getClientRects().length && !el.disabled &&
+                getComputedStyle(el).visibility !== 'hidden');
+            return {site: 'youtube', video_present: !!video,
+              playing: !!video && !video.paused && !video.ended,
+              ad_playing: ad, skip_available: skip,
+              auto_skip_enabled: !!window.__orionSkipWatcher};
+        }""")
 
-
-        observation = (
-
-            f"URL: {page.url}\n"
-
-            f"Title: {page.title()}\n\n"
-
-            f"Visible text:\n{body}\n\n"
-
-            f"Interactive elements:\n"
-
-            + "\n".join(lines)
-
-        )
-
-
-
-        print(f"\n[OBSERVE] {page.url}")
-
-
-
-        return {"observation": observation}
-
-
+    def quick_search(self, command):
+        """Navigate within one shared 4.5-second budget, without model calls."""
+        if command['site'] == 'youtube':
+            return self.youtube_search(command['query'])
+        if not self.domain_allowed(command['url']):
+            return {'error': 'Search website is not approved.'}
+        page = self.page()
+        self.reset_elements()
+        deadline = time.monotonic() + 4.5
+        try:
+            response = page.goto(command['url'], wait_until='commit', timeout=4500)
+            if response and response.status >= 400:
+                return {'error': f'Search returned HTTP {response.status}.'}
+            page.wait_for_load_state('domcontentloaded',
+                timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+            if not self.domain_allowed(page.url):
+                return {'error': 'Search redirected outside approved websites.'}
+            return {'query': command['query'], 'url': page.url, 'ready': True}
+        except BrowserTimeout:
+            return {'error': 'Search exceeded the fast response budget; the page may still be loading.'}
 
     def element(self, index):
 
@@ -1179,39 +1094,40 @@ class UniversalBrowser:
     # --------------------------------------------------------
 
     def youtube_search(self, query):
-        """Search YouTube and return a numbered list of video results."""
         if not isinstance(query, str) or not query.strip():
-            return {"error": "Provide a YouTube search query."}
-        url = "https://www.youtube.com/results?search_query=" + quote_plus(query.strip()[:200])
+            return {'error': 'Provide a YouTube search query.'}
+        url = 'https://www.youtube.com/results?search_query=' + quote_plus(query.strip()[:200])
         if not self.domain_allowed(url):
-            return {"error": "YouTube is not approved."}
-        page = self.page()
+            return {'error': 'YouTube is not approved.'}
+        self.youtube_results = []
+        self.reset_elements()
+        deadline = time.monotonic() + 4.5
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            self.reset_elements()
-            page.locator("a#video-title").first.wait_for(state="attached", timeout=12000)
+            page = self.page()
+            response = page.goto(url, wait_until='commit', timeout=4500)
+            if response and response.status >= 400:
+                return {'error': f'YouTube returned HTTP {response.status}.'}
+            page.locator('a#video-title[href*="/watch?"]').first.wait_for(
+                state='attached', timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+            raw = page.locator('a#video-title').evaluate_all("""links => links.slice(0, 40)
+                .map(a => ({url: a.href, title: (a.title || a.innerText || '').trim()}))""")
             seen = set()
-            results = []
-            links = page.locator("a#video-title")
-            for i in range(min(links.count(), 40)):
-                item = links.nth(i)
-                href = item.get_attribute("href") or ""
-                title = (item.get_attribute("title") or item.inner_text(timeout=2500) or "").strip()
-                full_url = urljoin("https://www.youtube.com", href)
-                parsed = urlparse(full_url)
-                video_id = parse_qs(parsed.query).get("v", [""])[0]
-                if (parsed.hostname not in ("youtube.com", "www.youtube.com")
-                        or parsed.path != "/watch" or len(video_id) != 11
-                        or video_id in seen):
+            for item in raw:
+                parsed = urlparse(item['url'])
+                video_id = parse_qs(parsed.query).get('v', [''])[0]
+                if (parsed.hostname not in ('youtube.com', 'www.youtube.com') or
+                    parsed.path != '/watch' or len(video_id) != 11 or video_id in seen):
                     continue
                 seen.add(video_id)
-                results.append({"index": len(results), "title": title[:160], "url": full_url})
-                if len(results) >= 12:
+                self.youtube_results.append({'index': len(self.youtube_results),
+                    'title': item['title'][:160], 'url': item['url']})
+                if len(self.youtube_results) >= 12:
                     break
-            self.youtube_results = results
-            return {"query": query, "results": results, "url": page.url}
+            if not self.youtube_results:
+                return {'error': 'No video results are available yet.'}
+            return {'query': query, 'results': self.youtube_results, 'url': page.url}
         except Exception as exc:
-            return {"error": f"YouTube search unavailable: {exc}"}
+            return {'error': f'YouTube search unavailable: {exc}'}
 
     def youtube_open_video(self, index):
         """Open one of the numbered results from youtube_search."""
@@ -1283,6 +1199,7 @@ class UniversalBrowser:
 
         actions = {
 
+            "media_state": self.media_state,
             "observe_page": self.observe_page,
 
             "navigate": self.navigate,
@@ -1376,6 +1293,7 @@ INDEX_ARG = {"index": {"type": "integer"}}
 
 
 TOOLS = [
+    tool("media_state", "Read current site, YouTube playback, ad and skip availability."),
     tool(
         "youtube_search",
         "Search YouTube for videos. Returns numbered video results with titles and URLs.",
@@ -1571,6 +1489,8 @@ Rules:
 
 13. If an action fails, observe again and reconsider.
 14. For YouTube video requests, prefer youtube_search and youtube_open_video.
+    Use media_state to inspect playback and ad availability without a full observation.
+    Automatic ad skipping continues while you are idle; do not repeatedly poll with tools.
     Inspect search result titles, do not assert an upload is official without evidence.
     The YouTube skip watcher only clicks visible, ordinary Skip Ad buttons.
     Never claim an unskippable ad was skipped.
@@ -1737,6 +1657,7 @@ def run_agent(browser, instruction):
 
 
 
+    started_at = time.monotonic()
     actions_taken = 0
 
     tool_errors = []
@@ -1769,6 +1690,7 @@ def run_agent(browser, instruction):
 
             "tabs": tabs,
 
+            "elapsed_ms": round((time.monotonic() - started_at) * 1000),
             "actions_taken": actions_taken,
 
             "tool_errors": tool_errors,
@@ -1779,6 +1701,18 @@ def run_agent(browser, instruction):
 
     try:
 
+        command = search_command(instruction, browser.page().url)
+        if command:
+            result = browser.quick_search(command)
+            actions_taken = 1
+            if 'error' in result:
+                tool_errors.append({'tool': 'quick_search', 'message': result['error']})
+                return finish('incomplete', result['error'])
+            message = f"Search results for {command['query']} are open on {command['site'].title()}."
+            if result.get('results'):
+                message += '\n' + '\n'.join(
+                    f"{item['index'] + 1}. {item['title']}" for item in result['results'][:5])
+            return finish('finished', message)
         initial_state = browser.observe_page()
 
 
