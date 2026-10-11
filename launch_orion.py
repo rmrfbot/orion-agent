@@ -2,7 +2,7 @@
 in three separate terminals (same as RUNBOOK.md).
 
 Run from anywhere:  python launch_orion.py
-Flags: --no-kill  skip port killer | --no-bubble | --no-frontend
+Flags: --no-kill  skip port killer | --no-bubble | --no-frontend | --no-token-url
 """
 import argparse
 import json
@@ -18,6 +18,7 @@ from urllib.request import urlopen
 ROOT = Path(__file__).resolve().parent
 NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 FRONTEND_URL = "http://127.0.0.1:5173"
+WAKE_URL = FRONTEND_URL + "/?wake=1"  # page auto-enables "Hey Orion"
 
 KILL_PS = r"""
 foreach ($port in 8000, 5173) {
@@ -26,6 +27,16 @@ foreach ($port in 8000, 5173) {
                      Write-Host "Stopped process on port $port" }
 }
 """
+
+
+def local_token():
+    """ORION_LOCAL_TOKEN from the root .env, or empty."""
+    env = ROOT / ".env"
+    if env.exists():
+        for line in env.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if line.strip().startswith("ORION_LOCAL_TOKEN") and "=" in line:
+                return line.split("=", 1)[1].strip().strip("\"'")
+    return ""
 
 
 def venv_python():
@@ -118,6 +129,8 @@ def main():
     ap.add_argument("--no-kill", action="store_true")
     ap.add_argument("--no-bubble", action="store_true")
     ap.add_argument("--no-frontend", action="store_true")
+    ap.add_argument("--no-token-url", action="store_true",
+                    help="do not pass the local token to the page; type it in yourself")
     args = ap.parse_args()
     py = venv_python()
 
@@ -156,8 +169,11 @@ def main():
             f"open {FRONTEND_URL}."
         )
 
-    subprocess.Popen([chrome, FRONTEND_URL])
-    print(f"[ORION] Chrome opened at {FRONTEND_URL}.")
+    token = "" if args.no_token_url else local_token()
+    url = WAKE_URL + (f"#token={token}" if token else "")
+    subprocess.Popen([chrome, "--new-window", url])
+    print(f"[ORION] Chrome opened at {WAKE_URL} (Hey Orion auto-enabled"
+          f"{', token passed' if token else ''}).")
 
 
 if __name__ == "__main__":
