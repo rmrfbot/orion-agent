@@ -11,11 +11,14 @@ from fastapi import (
     Header,
     HTTPException,
     status,
+    Request,
+    Response,
 )
 from pydantic import BaseModel, Field
 
 from backend.browser_worker import BrowserWorker
 from backend.performance import measure
+from backend.voice_service import VoiceService, configuration, MAX_AUDIO_BYTES
 
 
 # ============================================================
@@ -41,6 +44,7 @@ if not LOCAL_TOKEN:
 # Create one browser worker for the entire application.
 # It will own the Playwright instance and Google Chrome.
 worker = BrowserWorker()
+voice_service = VoiceService()
 
 
 # ============================================================
@@ -133,6 +137,7 @@ def health():
         "service": "ORION Desktop",
         "browser_worker": worker.running,
         "browser_state": worker.browser_state,
+        "voice": configuration(),
     }
 
 
@@ -216,3 +221,32 @@ def root():
         "message": "ORION Desktop API is running.",
         "documentation": "/docs",
     }
+
+
+# Voice requests run on FastAPI's event loop, never the Playwright owner thread.
+def verify_voice_local(request: Request):
+    if not request.client or request.client.host not in ('127.0.0.1', '::1'):
+        raise HTTPException(403, 'Voice endpoints accept localhost connections only.')
+
+
+class SpeechRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
+@app.post('/api/voice/transcribe', dependencies=[Depends(verify_token), Depends(verify_voice_local)])
+async def transcribe_voice(request: Request):
+    if request.headers.get('content-type', '').split(';')[0].strip().lower() not in ('audio/wav', 'audio/x-wav'):
+        raise HTTPException(415, 'Voice transport requires audio/wav.')
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > MAX_AUDIO_BYTES:
+            raise HTTPException(413, 'Recording exceeds the 1 MB limit.')
+        data.extend(chunk)
+    return await voice_service.transcribe(bytes(data))
+
+
+@app.post('/api/voice/speak', dependencies=[Depends(verify_token), Depends(verify_voice_local)])
+async def speak_voice(command: SpeechRequest):
+    audio, elapsed = await voice_service.speak(command.text)
+    return Response(audio, media_type='audio/mpeg', headers={
+        'Cache-Control': 'no-store', 'X-ORION-Voice-Elapsed-Ms': str(elapsed)})

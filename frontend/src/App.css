@@ -551,3 +551,58 @@ button:focus-visible, input:focus-visible { outline: 2px solid #91bfff; outline-
 }
 
 .task-status.paused, .message-status.paused { color: #ffd084; }
+
+/* One shared application, two native window presentations. */
+.floating-shell {
+  border: 1px solid #29445e;
+  border-radius: 18px;
+  min-height: 280px;
+  max-height: 100vh;
+  overflow-y: auto;
+  background: linear-gradient(145deg, #101d2b, #090d16 65%);
+  color: #e9eef8;
+  box-shadow: inset 0 1px #ffffff0b;
+  animation: panel-in .16s ease-out;
+}
+.floating-header { display:flex; align-items:center; gap:5px; padding:12px 10px 10px 16px; border-bottom:1px solid #263449; }
+.floating-drag { display:flex; align-items:center; gap:8px; flex:1; min-width:0; cursor:move; user-select:none; }
+.floating-drag svg { color:#82c9ff; }
+.floating-drag strong { letter-spacing:3px; font-size:15px; }
+.floating-drag>span:last-child { font-size:10px; color:#a8b8ca; }
+.floating-header button,.voice-buttons button,.collapse-button {
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  border:1px solid #30455e; border-radius:9px; background:#142134; color:#dcecff;
+  padding:8px; flex-shrink:0;
+}
+.floating-header button:hover,.voice-buttons button:hover,.collapse-button:hover { background:#203953; }
+.floating-body { padding:15px 16px 12px; }
+.floating-task { font-size:11px; color:#9ccaff; letter-spacing:.3px; }
+.floating-task.finished { color:#6ee5bc; }
+.floating-task.failed { color:#ff9199; }
+.floating-task.incomplete,.floating-task.paused { color:#ffd084; }
+.floating-command { color:#a0b4cc; font-size:12px; margin:10px 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.floating-response { font-size:13px; line-height:1.65; margin:12px 0; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:4; overflow:hidden; overflow-wrap:anywhere; }
+.floating-composer { display:flex; align-items:center; gap:8px; border:1px solid #34506c; border-radius:12px; padding:8px; margin-top:12px; }
+.floating-composer input { width:100%; min-width:0; background:transparent; border:0; color:#eef5ff; font-size:12px; padding:5px; }
+.floating-composer button { display:grid; place-items:center; border:0; padding:7px; color:#091322; background:#8acaff; border-radius:8px; }
+.floating-footer { display:flex; justify-content:space-between; gap:10px; font-size:9px; color:#8ea6bf; margin-top:12px; }
+.voice-controls { margin:12px 0; }
+.voice-buttons { display:flex; flex-wrap:wrap; gap:7px; align-items:center; }
+.voice-buttons button { font-size:11px; min-height:35px; }
+.voice-buttons .mic-button { background:#193650; border-color:#3e7197; color:#bce8ff; }
+.voice-buttons .mic-button.listening { background:#542130; border-color:#dc788a; color:#ffe4e8; }
+.voice-indicator { color:#a1b6cc; font-size:10px; line-height:1.6; display:flex; align-items:center; gap:8px; margin-top:9px; }
+.voice-notice { color:#ffd084; font-size:11px; line-height:1.6; margin:8px 0; overflow-wrap:anywhere; }
+.transcript { margin-top:10px; border-left:2px solid #65b6e9; padding-left:10px; }
+.transcript>span { color:#83aecf; font-size:9px; letter-spacing:1px; }
+.transcript p { margin:4px 0; color:#d1e6f6; font-size:12px; line-height:1.5; max-height:64px; overflow-y:auto; overflow-wrap:anywhere; }
+.audio-bars { display:flex; gap:2px; align-items:center; height:15px; }
+.audio-bars i { display:block; width:3px; height:12px; background:#8edaff; border-radius:2px; animation:audio-pulse .75s ease-in-out infinite alternate; }
+.audio-bars i:nth-child(2n) { animation-delay:-.3s; height:8px; }
+.audio-bars i:nth-child(3) { animation-delay:-.5s; height:15px; }
+.shortcut-settings { display:flex; flex-direction:column; gap:8px; font-size:11px; color:#a0b4cc; }
+.shortcut-settings input { background:#111e2c; border:1px solid #30455e; border-radius:7px; padding:8px; width:100%; color:#e3f0ff; font-size:11px; }
+.shortcut-settings button { background:#18314a; border:1px solid #30455e; border-radius:7px; padding:7px; color:#d4eaff; font-size:11px; }
+@keyframes audio-pulse { from { transform:scaleY(.4); } to { transform:scaleY(1); } }
+@keyframes panel-in { from { opacity:.65; transform:translateY(3px); } to { opacity:1; transform:translateY(0); } }
+@media(prefers-reduced-motion:reduce) { .audio-bars i,.floating-shell { animation:none; } }

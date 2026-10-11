@@ -12,7 +12,7 @@ changing it. This embedded credential is for local development/demo builds,
 not secure distribution. Browser-only development retains manual token entry.
 
 For the native presentation window, backend startup commands, reconnect behavior,
-and validation results, see [the desktop presentation guide](docs/desktop-presentation.md).
+and validation results, see [the hybrid copilot guide](docs/hybrid-copilot.md).
 Run `npx.cmd tauri dev` from `frontend`; no installer is needed.
 
 Simple searches use a direct route without model calls:
@@ -60,3 +60,9 @@ such as `skip the ad`, `pause`, `play`, `scroll down`, `switch to tab 2`, and
 `open YouTube` run locally. `play jazz on YouTube` searches locally, uses one
 model call to choose a result, and verifies playback locally. Tab/video numbers
 in these explicit commands start at 1.
+
+
+ORION now launches as a floating copilot. Expand opens Mission Control;
+Ctrl+Shift+Space restores the desktop window. See the [hybrid copilot and voice
+guide](docs/hybrid-copilot.md) for ElevenLabs setup, microphone controls,
+startup commands, validation and demo limitations.

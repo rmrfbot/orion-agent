@@ -1,0 +1,92 @@
+﻿# ORION hybrid copilot
+
+ORION launches in one compact floating Tauri window. Its dedicated header drag region, always-on-top state, microphone controls, concise response and typed input remain available above Chrome. Expand opens the existing Mission Control dashboard; Collapse restores the floating view. Both views share history, tasks, transcription, connection, audio, mute preference and telemetry. Resizing restores dimensions and position without cumulative drift.
+
+## Configure ElevenLabs
+
+Replace the placeholders privately in the root `.env`:
+
+```dotenv
+ELEVENLABS_API_KEY=your_actual_account_key
+ELEVENLABS_VOICE_ID=your_selected_voice_id
+ELEVENLABS_MODEL_ID=eleven_flash_v2_5
+```
+
+Enable both `text_to_speech` and `speech_to_text` permissions on the API key. Choose and preview a calm, natural voice in your ElevenLabs account's Voices/Voice Library, copy its voice ID, and restart FastAPI. ORION uses restrained voice settings, Scribe v2 for English transcription and Flash v2.5 for speech. No credentials belong in chat, React, frontend build variables or Git. Rust continues to embed only the existing local ORION token, a local-demo convenience rather than secure distribution.
+
+## PowerShell startup
+
+Backend terminal:
+
+```powershell
+Set-Location 'C:\Users\prana\OneDrive\Desktop\ORION\orion-agent'
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements-voice.txt
+.\.venv\Scripts\python.exe -m uvicorn backend.api:app --host 127.0.0.1 --port 8000
+```
+
+Desktop terminal:
+
+```powershell
+Set-Location 'C:\Users\prana\OneDrive\Desktop\ORION\orion-agent\frontend'
+$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+npx.cmd tauri dev
+```
+
+Close an older desktop if Windows reports `app.exe` locked, and close any separate Vite server on port 5173. The normal Tauri command starts Vite itself. Closing the desktop never terminates FastAPI or Chrome. No installer is built.
+
+## End-to-end demo check
+
+1. Launch compact ORION, confirm Connected and voice readiness, and drag the header above Chrome.
+2. Click Push to talk, allow microphone access, and confirm the visible Listening indicator. Say “ORION, open YouTube.”
+3. Click Stop & send. All microphone tracks are released. The raw transcript appears; only the leading ORION address is removed before the shared command pipeline receives the instruction. Verify one task runs and the text result appears immediately.
+4. With speech unmuted, listen for the concise result. The speaker button toggles mute; Stop speaking cancels current/pending audio. If autoplay is blocked, Play response uses the already-fetched audio without another synthesis request.
+5. Expand Mission Control, inspect conversation/browser/voice telemetry, then Collapse. Pending tasks and transcript must remain intact.
+6. Minimize and press Ctrl+Shift+Space to restore/focus ORION. Expanded mode's sidebar lets you change the shortcut; it must include Ctrl and Shift. Conflicts retain the previous working registration. Preferences are saved locally; registrations are released on exit.
+7. Record again and click Cancel: nothing should be transcribed or executed. Check permission denial and device disconnection recovery. Minimizing/hiding cancels pending capture/transcription; already-submitted browser tasks continue normally.
+
+Startup, showing the window and shortcuts never start recording. Capture is capped at 30 seconds; exceeding the limit cancels rather than executing a partial instruction. Typed commands work when voice is unavailable. Both input paths use CommandSession.submit, without a separate Gemini workflow or speech-summary model call. Playback confirmation requires progress-verified, non-ad playback evidence from the actual browser result; model wording alone cannot claim success.
+
+## Transport and limits
+
+WebView2 MediaRecorder captures supported WebM/Opus or MP4. Web Audio converts it in memory to mono 16 kHz PCM16 WAV. Silent/empty/unsupported recordings fail without executing anything. Tauri transports WAV using raw Uint8Array IPC, never large JSON byte arrays. Rust sends authenticated bytes to a fixed localhost endpoint; synthesis returns binary audio through tauri::ipc::Response. Existing destination restrictions, sensitive token header, proxy bypass and disabled redirects remain intact. Browser-only Vite mode retains its proxy and manual local-token entry.
+
+FastAPI voice endpoints require the existing token and localhost clients. WAV frame data validates duration and format, with a 1 MB input limit. TTS text is limited to 500 characters, output audio to 2 MB, concurrency to two requests and upstream work to bounded connect/read/total deadlines. Requests run asynchronously on FastAPI's loop, never the Playwright owner thread. Existing event pumping, direct browser commands, domain restrictions and ad monitoring are preserved. Separate voice transcription/synthesis PERF timings do not delay browser-result display.
+
+ORION keeps recordings in memory, creates no recording files and logs timings rather than audio or credentials. ElevenLabs' provider retention follows the account policy; local memory-only handling is not provider zero retention. Canceling discards late native results and prevents execution/playback, but already-started provider work can continue until its deadline and may still be billed. Speech uses a complete bounded MP3 response rather than streaming.
+
+## Dependencies and changed files
+
+Python: existing HTTPX 0.28.1 is explicitly declared in requirements-voice.txt; direct REST integration adds no SDK dependency. Frontend: no new packages. Rust: official tauri-plugin-global-shortcut 2.4.1 and its Cargo-locked dependencies.
+
+- backend/api.py: authenticated localhost voice endpoints and safe readiness flags.
+- backend/voice_service.py: validation, async provider calls, concurrency/deadlines, sanitized errors and timing.
+- backend/requirements-voice.txt: HTTPX dependency declaration.
+- backend/universal_agent.py: exposes existing verified playback evidence without extra browser/model work.
+- frontend/src/App.tsx and App.css: shared floating/expanded views, accessible controls, settings and lifecycle handling.
+- frontend/src/commands.ts: shared command-origin tracking and response callback.
+- frontend/src/desktop.ts: raw native audio transport, binary response handling and event subscriptions.
+- frontend/src/voice.ts: recording/transcription/speech controller with cancellation, mute and stale-result protection.
+- frontend/src/voice-browser.ts: browser/WebView2 microphone and media adapters.
+- frontend/src/audio.ts: bounded in-memory WAV conversion.
+- frontend/src/VoiceControls.tsx: accessible recording/cancel/mute/playback interface.
+- frontend/src/window-session.ts: serialized mode transitions and shortcut preferences/conflict feedback.
+- frontend/src-tauri/src/overlay.rs: window sizing/restoration, drag/minimize/focus and shortcut registration.
+- frontend/src-tauri/src/voice.rs: scoped authenticated binary commands and size bounds.
+- frontend/src-tauri/src/lib.rs: native command/plugin registration, inactivity events and shortcut cleanup.
+- frontend/src-tauri/src/connection.rs: internal shared HTTP client; existing request restrictions remain.
+- frontend/src-tauri/tauri.conf.json: compact initial dimensions, frameless dark appearance and always-on-top state.
+- frontend/src-tauri/Cargo.toml and Cargo.lock: shortcut dependency and lockfile.
+- tests/test_voice_service.py: provider contracts/errors, auth/binary/duration/concurrency and playback-evidence tests.
+- frontend/tests/voice.test.mjs: permission/recording/cancel/audio/window/shortcut/shared-submission tests.
+- README.md and docs/hybrid-copilot.md: launch/configuration instructions and this guide.
+- Ignored root .env: missing voice model/setup defaults only; existing key and voice values were preserved. User-provided credentials remain private and ignored by Git.
+
+## Validation and remaining demo risks
+
+Validation passed: 59 Python tests, 21 frontend controller tests, eight Rust tests, TypeScript/Vite production build, changed-file ESLint and Git whitespace checks. Cargo compilation also validated Tauri configuration. Automated ElevenLabs requests are mocked. Native Windows checks confirmed compact visibility/always-on-top, expansion with normal decorations, repeated switches with stable dimensions, minimizing, and actual Ctrl+Shift+Space restoration. The normal npx.cmd tauri dev command launched Vite and the native executable. No physical microphone was activated in GUI testing.
+
+Headless UI checks used a synthetic Web Audio microphone with real MediaRecorder and WAV conversion, mocked native speech APIs and mocked playback. They verified one submission, transcript preservation, response-before-audio behavior, focus and compact/expanded continuity. This is not a live microphone/provider/speaker test.
+
+Live configuration check: the user-provided key and voice ID were loaded by restarting FastAPI. Both authenticated localhost voice routes reached ElevenLabs, which returned HTTP 401 `missing_permissions`: the key lacks `text_to_speech` and `speech_to_text`. Enable both permissions in ElevenLabs, or replace the key with one that has both, then restart FastAPI if its value changes. No physical microphone or speaker was activated. Successful provider audio generation, transcription, voice/model access and physical microphone permissions remain unverified until these permissions are corrected. WebView2 codec/autoplay behavior can vary; failures retain typed-command access. Network, Chrome startup and speech-provider latency can exceed the existing warm-session five-second browser target. The existing local-demo credential/CSP setup remains unchanged; no installer or production security review is implied.
+
+Official contracts checked: [Scribe transcription](https://elevenlabs.io/docs/api-reference/speech-to-text/convert), [speech synthesis](https://elevenlabs.io/docs/api-reference/text-to-speech/convert), [Tauri IPC](https://v2.tauri.app/develop/calling-rust/), [global shortcuts](https://v2.tauri.app/plugin/global-shortcut/).

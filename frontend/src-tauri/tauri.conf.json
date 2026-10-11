@@ -14,15 +14,18 @@
     "windows": [
       {
         "title": "ORION | Mission Control",
-        "width": 1200,
-        "height": 680,
-        "minWidth": 900,
-        "minHeight": 560,
+        "width": 420,
+        "height": 360,
+        "minWidth": 360,
+        "minHeight": 280,
         "center": true,
         "theme": "Dark",
         "backgroundColor": "#090d16",
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "shadow": true
       }
     ],
     "security": {

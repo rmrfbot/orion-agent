@@ -1,0 +1,2 @@
+# Voice service uses the verified ElevenLabs REST contracts through HTTPX.
+httpx>=0.28.1,<0.29

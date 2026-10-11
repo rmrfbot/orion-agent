@@ -8,7 +8,7 @@ pub struct RequestError {
     status: Option<u16>,
 }
 impl RequestError {
-    fn new(message: &str, status: Option<u16>) -> Self {
+    pub(crate) fn new(message: &str, status: Option<u16>) -> Self {
         Self {
             message: message.into(),
             status,
@@ -17,7 +17,7 @@ impl RequestError {
 }
 
 pub struct DesktopConnection {
-    client: reqwest::Client,
+    pub(crate) client: reqwest::Client,
 }
 
 impl DesktopConnection {

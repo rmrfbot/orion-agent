@@ -1,5 +1,7 @@
 export type TaskStatus = "queued" | "running" | "finished" | "incomplete" | "failed" | "paused";
 export type TaskResult = {
+  verified_playback?: boolean;
+  playback_state?: string | null;
   human_intervention_required?: boolean;
   verification?: { site: string; url: string; evidence: string } | null;
   elapsed_ms?: number;
@@ -42,7 +44,7 @@ type Options = {
   request: Request;
   storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
   wait?: typeof delay;
-  onResponse?: (text: string, task: BrowserTask) => void;
+  onResponse?: (text: string, task: BrowserTask, source: 'typed' | 'voice') => void;
 };
 const pendingKey = "orion.pending-task";
 
@@ -54,8 +56,10 @@ export class CommandSession {
   };
   private listeners = new Set<() => void>();
   private generation = 0;
+  private sources = new Map<string, 'typed' | 'voice'>();
   private options: Options;
   constructor(options: Options) { this.options = options; }
+  setResponseHandler(handler: Options["onResponse"]) { this.options.onResponse = handler; }
   setRequest(request: Request) { this.options.request = request; }
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
@@ -85,7 +89,7 @@ export class CommandSession {
     }
   }
   stop() { ++this.generation; } // Stop UI tracking only; never stop backend/Chrome.
-  async submit(instruction: string): Promise<boolean> {
+  async submit(instruction: string, source: 'typed' | 'voice' = 'typed'): Promise<boolean> {
     instruction = instruction.trim();
     if (!instruction || this.state.busy) return false;
     if (instruction.length > 2000) {
@@ -100,6 +104,7 @@ export class CommandSession {
       const task = await this.options.request<BrowserTask>("/api/tasks", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instruction }),
       });
+      this.sources.set(task.task_id, source);
       this.remember(task.task_id);
       if (generation !== this.generation) return true;
       this.update({ task });
@@ -127,7 +132,8 @@ export class CommandSession {
           this.update({ busy: false });
           const text = task.result?.message || task.error || `Task ${statusLabels[task.status].toLowerCase()}.`;
           this.message("assistant", text, task.status);
-          try { this.options.onResponse?.(text, task); } catch { /* Response consumers must not restart task polling. */ }
+          try { this.options.onResponse?.(text, task, this.sources.get(id) ?? 'typed'); } catch { /* Response consumers must not restart task polling. */ }
+          this.sources.delete(id);
           return;
         }
         await wait(250);

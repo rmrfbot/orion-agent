@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Activity,
+  Maximize2, Minimize2, Minus,
   ArrowUp,
   Bot,
   CheckCircle2,
@@ -15,9 +16,13 @@ import {
   UserRound,
 } from "lucide-react";
 import "./App.css";
-import { desktopCore, apiRequest } from "./desktop";
+import { desktopCore, apiRequest, listenNative } from "./desktop";
 import { CommandSession, delay, statusLabels } from "./commands";
 import type { Request } from "./commands";
+import { VoiceSession } from './voice';
+import { browserVoiceIO } from './voice-browser';
+import { VoiceControls } from './VoiceControls';
+import { WindowSession } from './window-session';
 
 function App() {
   const [desktop, setDesktop] = useState(() => !!desktopCore());
@@ -34,6 +39,50 @@ function App() {
   });
   const { messages, task, busy, notice, lastInstruction } = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const connected = connection === 'connected';
+  const [voiceAvailable,setVoiceAvailable]=useState(false);
+  const [voice]=useState(()=>{
+    let muted=false;try{muted=localStorage.getItem('orion.voice-muted')==='true';}catch{/* Optional preference. */}
+    return new VoiceSession({io:browserVoiceIO(),muted,canSubmit:()=>!session.getSnapshot().busy,
+      submit:text=>session.submit(text,'voice')});
+  });
+  const voiceState=useSyncExternalStore(voice.subscribe,voice.getSnapshot);
+  const [shell]=useState(()=>{
+    let storage:Storage|undefined;try{storage=localStorage;}catch{/* Optional preference. */}
+    return new WindowSession({native:!!desktopCore(),storage,invoke:(command,args)=>{
+      const core=desktopCore();if(!core)return Promise.reject(new Error('Desktop window unavailable'));
+      return core.invoke(command,args);
+    }});
+  });
+  const windowState=useSyncExternalStore(shell.subscribe,shell.getSnapshot);
+  const [shortcutInput,setShortcutInput]=useState<string|null>(null);
+  const compactRef=useRef<HTMLDivElement>(null);
+  const voiceBusy=voiceState.phase!=='idle';
+  const commandDisabled=busy||voiceBusy;
+  const focusCommand=()=>document.querySelector<HTMLInputElement>('[aria-label="Browser command"]')?.focus();
+  const mute=()=>{const value=!voiceState.muted;voice.setMuted(value);try{localStorage.setItem('orion.voice-muted',String(value));}catch{/* Optional preference. */}};
+  const voiceControls=<VoiceControls voice={voice} state={voiceState} available={voiceAvailable}
+    disabled={busy||!connected||(!desktop&&!token.trim())} onMute={mute}/>;
+
+  useEffect(()=>{
+    session.setResponseHandler((_text,task,source)=>{if(source==='voice')void voice.speak(task);else voice.stopSpeaking();});
+    void shell.load();
+    const cancel=()=>{if(document.hidden)voice.suspend();};
+    const close=()=>voice.suspend();
+    document.addEventListener('visibilitychange',cancel);window.addEventListener('pagehide',close);
+    let active=true;const cleanups:(()=>void)[]=[];
+    for(const [event,handler] of [['orion-inactive',()=>voice.suspend()],['orion-summoned',focusCommand]] as const){
+      void listenNative(event,handler).then(cleanup=>{if(active)cleanups.push(cleanup);else cleanup();}).catch(()=>{});
+    }
+    return()=>{active=false;cleanups.forEach(fn=>fn());document.removeEventListener('visibilitychange',cancel);window.removeEventListener('pagehide',close);voice.dispose();session.setResponseHandler(undefined);};
+  },[session,voice,shell]);
+
+  useEffect(()=>{
+    requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('[aria-label="Browser command"]')?.focus());
+    if(!windowState.compact||!compactRef.current)return;
+    const observer=new ResizeObserver(entries=>{const height=entries[0]?.target.scrollHeight;if(height)void shell.setHeight(height+2);});
+    observer.observe(compactRef.current);return()=>observer.disconnect();
+  },[windowState.compact,shell]);
+
 
   useEffect(() => {
     session.start();
@@ -51,10 +100,11 @@ function App() {
     const check = async () => {
       while (active) {
         try {
-          const data = await apiRequest<{browser_worker: boolean; browser_state?: string}>('/health');
+          const data = await apiRequest<{browser_worker: boolean; browser_state?: string;voice?:{transcription:boolean;speech:boolean}}>('/health');
           if (active) {
             setConnection(data.browser_worker ? 'connected' : 'disconnected');
             setBrowserState(data.browser_state ?? 'unknown');
+            setVoiceAvailable(data.voice?.transcription??false);voice.setSpeechEnabled(data.voice?.speech??false);
           }
         } catch {
           if (active) setConnection('disconnected');
@@ -64,7 +114,7 @@ function App() {
     };
     void check();
     return () => { active = false; };
-  }, [desktop]);
+  }, [desktop,voice]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -72,7 +122,8 @@ function App() {
 
   const submit = async (instruction = input) => {
     if ((!desktop && !token.trim()) || !connected) return;
-    if (!instruction.trim() || busy) return;
+    if (!instruction.trim() || commandDisabled) return;
+    voice.stopSpeaking();
     setInput('');
     await session.submit(instruction);
   };
@@ -85,6 +136,32 @@ function App() {
   // ======================================================
   // DASHBOARD
   // ======================================================
+
+  const latest=messages.filter(message=>message.role==='assistant'&&message.id!=='welcome').at(-1);
+  if(windowState.compact)return <div className="floating-shell" ref={compactRef}>
+    <header className="floating-header">
+      <div className="floating-drag" onPointerDown={event=>{if(event.button===0&&desktop)void shell.action('drag');}}>
+        <Orbit size={22}/><strong>ORION</strong><span className={`status-dot ${connected?'online':''}`}/>
+        <span>{connected?'Connected':connection==='checking'?'Connecting':'Disconnected'}</span>
+      </div>
+      <button type="button" onClick={()=>void shell.setMode(false)} disabled={windowState.pending} aria-label="Expand Mission Control" title="Expand Mission Control"><Maximize2 size={17}/></button>
+      <button type="button" onClick={()=>{voice.suspend();void shell.action('minimize');}} disabled={!desktop} aria-label="Minimize ORION" title="Minimize; summon with your global shortcut"><Minus size={18}/></button>
+    </header>
+    <div className="floating-body">
+      <div className={`floating-task ${task?.status??''}`} role="status">{busy&&!task?'Sending command...':task?statusLabels[task.status]:'Ready for your command'}</div>
+      {task?.instruction&&<p className="floating-command">{task.instruction}</p>}
+      {latest&&<p className="floating-response" aria-live="polite">{latest.content}</p>}
+      {!connected&&<p className="voice-notice">Start the FastAPI backend. ORION reconnects automatically.</p>}
+      {notice&&<p className="voice-notice" role="status">{notice}</p>}
+      {voiceControls}
+      <form className="floating-composer" onSubmit={event=>{event.preventDefault();void submit();}}>
+        <input aria-label="Browser command" placeholder="Or type a command..." value={input} onChange={event=>setInput(event.target.value)} maxLength={2000} disabled={commandDisabled}/>
+        <button type="submit" aria-label="Send command" title="Send typed command" disabled={commandDisabled||!input.trim()||!connected||(!desktop&&!token.trim())}><ArrowUp size={18}/></button>
+      </form>
+      <div className="floating-footer"><span>{windowState.shortcut}</span><span>Click mic to record; 30s max</span></div>
+      {windowState.shortcut_error&&<p className="voice-notice">{windowState.shortcut_error}</p>}
+    </div>
+  </div>;
 
   return (
     <div className="app">
@@ -116,7 +193,7 @@ function App() {
             <span>
               {connected
                 ? "Connected"
-                : connection === 'checking' ? "Connecting?" : "Disconnected"}
+                : connection === 'checking' ? "Connecting..." : "Disconnected"}
             </span>
           </div>
         </div>
@@ -138,7 +215,7 @@ function App() {
             placeholder="Paste local token"
             value={token}
             onChange={(e) =>
-              { const value = e.target.value; session.setRequest((path, init) => apiRequest(path, init, value)); setToken(value); }
+              { const value = e.target.value; session.setRequest((path, init) => apiRequest(path, init, value)); voice.setTransport(browserVoiceIO(value)); setToken(value); }
             }
             autoComplete="off"
           />
@@ -149,6 +226,13 @@ function App() {
           </>}
         </div>
 
+        <form className="shortcut-settings" onSubmit={event=>{event.preventDefault();void shell.setShortcut(shortcutInput??windowState.shortcut).then(ok=>{if(ok)setShortcutInput(null);});}}>
+          <label htmlFor="shortcut">Summon shortcut</label>
+          <input id="shortcut" value={shortcutInput??windowState.shortcut} onChange={event=>setShortcutInput(event.target.value)} disabled={!desktop} maxLength={80}/>
+          <button type="submit" disabled={!desktop}>Apply shortcut</button>
+          <p className="hint">Active: {windowState.shortcut}</p>
+          {windowState.shortcut_error&&<p className="voice-notice">{windowState.shortcut_error}</p>}
+        </form>
         <div className="sidebar-bottom">
           <Settings2 size={16} />
           <span>ORION Development Build</span>
@@ -164,6 +248,7 @@ function App() {
           </div>
 
           <div className="topbar-right">
+            <button className="collapse-button" type="button" onClick={()=>void shell.setMode(true)} disabled={windowState.pending} aria-label="Collapse to floating mode" title="Collapse to floating copilot"><Minimize2 size={17}/></button>
             <Activity size={15} />
             <span className={`connection-label ${connected ? 'connected' : ''}`}>{connected ? 'Connected' : connection === 'checking' ? 'Connecting' : 'Disconnected'}</span>
           </div>
@@ -240,8 +325,9 @@ function App() {
           )}
 
           {!busy && lastInstruction && (task?.status === 'failed' || task?.status === 'incomplete' || task?.status === 'paused' || notice) &&
-            <button className="retry-button" disabled={!connected || (!desktop && !token.trim())}
+            <button className="retry-button" disabled={commandDisabled || !connected || (!desktop && !token.trim())}
               onClick={() => void submit(lastInstruction)}>Retry last command</button>}
+          {voiceControls}
           <form
             className="composer"
             onSubmit={(e) => {
@@ -255,7 +341,7 @@ function App() {
                 setInput(e.target.value)
               }
               placeholder="Enter your command, Commander..."
-              disabled={busy}
+              disabled={commandDisabled}
               aria-label="Browser command"
               autoComplete="off"
               maxLength={2000}
@@ -263,7 +349,7 @@ function App() {
 
             <button
               type="submit"
-              disabled={busy || !input.trim() || !connected || (!desktop && !token.trim())}
+              disabled={commandDisabled || !input.trim() || !connected || (!desktop && !token.trim())}
               aria-label="Send command"
             >
               <ArrowUp size={21} />
@@ -373,6 +459,11 @@ function App() {
           </div>
         </div>
 
+        <div className="telemetry-card voice-timings">
+          <p className="section-label">VOICE TIMING</p>
+          <div className="metric-row"><span>Transcription</span><strong>{voiceState.transcriptionMs!=null?`${voiceState.transcriptionMs} ms`:'--'}</strong></div>
+          <div className="metric-row"><span>Synthesis + transport</span><strong>{voiceState.synthesisMs!=null?`${voiceState.synthesisMs} ms`:'--'}</strong></div>
+        </div>
         <div className="panel-footer">
           <span className={`status-dot ${connected ? 'online' : ''}`} />
           GEMINI + PLAYWRIGHT

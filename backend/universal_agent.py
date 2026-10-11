@@ -1683,8 +1683,16 @@ def run_agent(browser, instruction):
 
     tool_errors = []
     network_calls = set()
+    playback_evidence = None
 
 
+
+    def record_playback(name, result):
+        nonlocal playback_evidence
+        if name in ('youtube_play', 'youtube_open_video', 'media_state') and isinstance(result, dict):
+            playback_evidence = result.get('playback', result)
+        elif name in ('navigate', 'open_tab', 'switch_tab', 'close_tab', 'youtube_pause', 'youtube_search', 'youtube_skip_ad', 'click_element', 'press_enter'):
+            playback_evidence = None
 
     def finish(outcome, message, verification_evidence=None):
 
@@ -1710,6 +1718,9 @@ def run_agent(browser, instruction):
             "outcome": outcome,
             "human_intervention_required": outcome == "paused",
             "verification": verification_evidence,
+            "verified_playback": bool(playback_evidence and playback_evidence.get('playing') and
+                                      playback_evidence.get('progress_verified') and not playback_evidence.get('ad_playing')),
+            "playback_state": playback_evidence.get('state') if playback_evidence else None,
 
             "message": message,
 
@@ -1733,6 +1744,7 @@ def run_agent(browser, instruction):
             with measure(f'direct.{name}', timings):
                 result = browser.execute(name, args)
             actions_taken = 1
+            record_playback(name, result)
             if result.get("human_intervention_required"):
                 return finish("paused", result["error"], result.get("verification"))
             if result.get('error'):
@@ -1991,6 +2003,7 @@ def run_agent(browser, instruction):
 
 
                     actions_taken += 1
+                    record_playback(name, result)
                     if isinstance(result, dict) and result.get("human_intervention_required"):
                         return finish("paused", result["error"], result.get("verification"))
                     if video_query and name == 'youtube_open_video':
