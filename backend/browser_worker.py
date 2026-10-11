@@ -186,7 +186,7 @@ class BrowserWorker:
             except Exception:
                 valid = [
                     p for p in self.context.pages
-                    if not p.is_closed() and base.domain_allowed(p.url)
+                    if not p.is_closed() and (base.domain_allowed(p.url) or p.url == 'about:blank')
                 ]
                 if valid:
                     base.active_page = valid[-1]
@@ -229,9 +229,15 @@ class BrowserWorker:
                 base.active_page = valid[-1]
                 base.active_page.bring_to_front()
             else:
-                page = context.new_page()
+                page = next((p for p in context.pages if not p.is_closed() and p.url == 'about:blank'), None)
+                if page is None:
+                    page = context.new_page()
                 base.active_page = page
-                page.goto(START_URL, wait_until="commit", timeout=4000)
+
+            # Reuse Chrome's initial empty tab for the requested destination.
+            for page in list(context.pages):
+                if page is not base.active_page and not page.is_closed() and page.url == 'about:blank':
+                    page.close()
 
             self.safe_browser = APISafeBrowser(base)
             base.approve_domain = self.safe_browser.approve_domain

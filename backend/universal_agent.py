@@ -79,7 +79,7 @@ MAX_STEPS = 18
 
 
 
-START_URL = "https://www.wikipedia.org/"
+START_URL = "about:blank"
 
 
 
@@ -363,7 +363,7 @@ class UniversalBrowser:
 
 
 
-        if not self.domain_allowed(self.active_page.url):
+        if self.active_page.url != 'about:blank' and not self.domain_allowed(self.active_page.url):
 
             raise RuntimeError(
 
@@ -617,7 +617,9 @@ class UniversalBrowser:
 
 
 
-        page = self.context.new_page()
+        page = next((p for p in self.context.pages if not p.is_closed() and p.url == 'about:blank'), None)
+        if page is None:
+            page = self.context.new_page()
 
 
 
@@ -2198,19 +2200,17 @@ def main():
 
             else:
 
-                page = context.new_page()
+                page = next((p for p in context.pages if not p.is_closed() and p.url == 'about:blank'), None)
+                if page is None:
+                    page = context.new_page()
 
                 browser.active_page = page
 
 
 
-                page.goto(
-
-                    START_URL,
-
-                    wait_until="domcontentloaded",
-
-                )
+            for page in list(context.pages):
+                if page is not browser.active_page and not page.is_closed() and page.url == 'about:blank':
+                    page.close()
 
 
 
