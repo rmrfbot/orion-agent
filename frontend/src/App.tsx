@@ -16,6 +16,7 @@ import {
   Mic,
 } from "lucide-react";
 import "./App.css";
+import { desktopCore, desktopRequest } from "./desktop";
 
 type TaskStatus =
   | "queued"
@@ -69,6 +70,7 @@ const initialMessage: Message = {
 };
 
 function App() {
+  const desktop = !!desktopCore();
   const [token, setToken] = useState("");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
@@ -91,12 +93,14 @@ function App() {
 
     const check = async () => {
       try {
-        const response = await fetch("/health");
-        const data = await response.json();
+        const response = desktop ? null : await fetch("/health");
+        const data = desktop
+          ? await desktopRequest("/health") as { browser_worker?: boolean }
+          : await response!.json();
 
         if (active) {
           setConnected(
-            response.ok && data.browser_worker === true
+            (desktop || response?.ok === true) && data.browser_worker === true
           );
         }
       } catch {
@@ -112,7 +116,7 @@ function App() {
       active = false;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [desktop]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -147,6 +151,7 @@ function App() {
     url: string,
     init?: RequestInit
   ) => {
+    if (desktop) return desktopRequest(url, init);
     const response = await fetch(url, {
       ...init,
       headers: {
@@ -175,7 +180,7 @@ function App() {
 
     if (!instruction || busyRef.current) return;
 
-    if (!token.trim()) {
+    if (!desktop && !token.trim()) {
       setNotice(
         "Enter your local ORION API token to connect."
       );
@@ -308,6 +313,7 @@ function App() {
             CONNECTION
           </p>
 
+          {desktop ? <p className="hint">Desktop connection configured automatically.</p> : <>
           <label htmlFor="api-token">
             Local API token
           </label>
@@ -327,6 +333,7 @@ function App() {
           <p className="hint">
             Stored in memory for this window only.
           </p>
+          </>}
         </div>
 
         <div className="sidebar-bottom">
