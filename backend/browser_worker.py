@@ -60,7 +60,11 @@ class APISafeBrowser:
                 return {"error": "Website is not approved for this demo."}
 
         if name == "click_element":
-            return self.click_element(**args)
+            blocked = self.base.verification_state()
+            if blocked:
+                return blocked
+            result = self.click_element(**args)
+            return self.base.verification_state() or result
 
         # YouTube tools are scoped inside UniversalBrowser to youtube.com,
         # and youtube_open_video only accepts URLs from youtube_search.
@@ -261,7 +265,8 @@ class BrowserWorker:
             outcome = result.get("outcome")
             status = (
                 "finished" if outcome == "finished" else
-                "incomplete" if outcome == "incomplete" else "failed"
+                "incomplete" if outcome == "incomplete" else
+                "paused" if outcome == "paused" else "failed"
             )
             self.update_task(task_id, status=status, result=result)
             if not self._browser_alive():

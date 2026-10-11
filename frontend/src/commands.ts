@@ -1,5 +1,7 @@
-export type TaskStatus = "queued" | "running" | "finished" | "incomplete" | "failed";
+export type TaskStatus = "queued" | "running" | "finished" | "incomplete" | "failed" | "paused";
 export type TaskResult = {
+  human_intervention_required?: boolean;
+  verification?: { site: string; url: string; evidence: string } | null;
   elapsed_ms?: number;
   total_elapsed_ms?: number;
   outcome?: string;
@@ -30,9 +32,9 @@ export class RequestError extends Error {
   }
 }
 export const statusLabels: Record<TaskStatus, string> = {
-  queued: "Queued", running: "Running", finished: "Completed", incomplete: "Incomplete", failed: "Failed",
+  queued: "Queued", running: "Running", finished: "Completed", incomplete: "Incomplete", failed: "Failed", paused: "Human verification required",
 };
-const terminal = (status: TaskStatus) => ["finished", "failed", "incomplete"].includes(status);
+const terminal = (status: TaskStatus) => ["finished", "failed", "incomplete", "paused"].includes(status);
 export const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 type Snapshot = { messages: Message[]; task: BrowserTask | null; busy: boolean; notice: string; lastInstruction: string };

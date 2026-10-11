@@ -4,6 +4,17 @@ import { CommandSession, RequestError } from '../src/commands.ts';
 const task = (status = 'finished') => ({task_id:'fixture-123',instruction:'list tabs',status,result:{message:'Fixture response'},error:null});
 const storage = () => { const data = new Map(); return {getItem:k=>data.get(k),setItem:(k,v)=>data.set(k,v),removeItem:k=>data.delete(k)}; };
 const tick = () => new Promise(resolve=>setImmediate(resolve));
+test('human verification pauses polling and only explicit retry submits again', async()=>{
+  let posts=0, gets=0;
+  const session=new CommandSession({request:async(path)=>{
+    if(path==='/api/tasks'){posts++;return task('queued')}
+    gets++;return {...task('paused'),result:{message:'Human verification required. Complete it manually in Chrome.'}};
+  }});
+  session.start();await session.submit('list tabs');await tick();
+  assert.equal(session.getSnapshot().task.status,'paused');assert.equal(session.getSnapshot().busy,false);
+  assert.equal(posts,1);assert.equal(gets,1);
+  await session.submit('list tabs');assert.equal(posts,2);
+});
 test('duplicate clicks cannot submit twice while polling', async()=>{
   let posts=0, resolve;
   const pending=new Promise(r=>{resolve=r});

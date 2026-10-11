@@ -22,10 +22,12 @@ from google.genai import types, errors
 from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
 
 try:
+    from backend.request_policy import RequestPolicy, verification, protected_site
     from backend.fast_commands import search_command, direct_command, video_request
     from backend.browser_io import call_with_browser_events
     from backend.performance import measure
 except ModuleNotFoundError:
+    from request_policy import RequestPolicy, verification, protected_site
     from fast_commands import search_command, direct_command, video_request
     from browser_io import call_with_browser_events
     from performance import measure
@@ -230,6 +232,7 @@ class UniversalBrowser:
     def __init__(self, context):
 
         self.context = context
+        self.request_policy = RequestPolicy()
 
         self.active_page = None
 
@@ -392,6 +395,9 @@ class UniversalBrowser:
 
     def observe_page(self):
         page = self.page()
+        blocked = self.verification_state()
+        if blocked:
+            return blocked
         self.reset_elements()
         # A single browser round trip replaces hundreds of locator calls.
         snapshot = page.evaluate("""selector => {
@@ -445,25 +451,72 @@ class UniversalBrowser:
                 except Exception:
                     pass
 
+    def verification_state(self, target=None):
+        page = self.page()
+        blocked = verification(page)
+        if blocked:
+            return blocked
+        if target and protected_site(target):
+            for candidate in self.context.pages:
+                if candidate is not page and not candidate.is_closed() and protected_site(candidate.url) == protected_site(target):
+                    blocked = verification(candidate)
+                    if blocked:
+                        return blocked
+        return None
+
+    def prepare_search(self, url):
+        blocked = self.verification_state(url)
+        if blocked:
+            self.request_policy.cache.clear()
+            return blocked
+        cached = self.request_policy.cached(url, self.context.pages)
+        if cached:
+            page, result = cached
+            if self.active_page is not page:
+                self.active_page = page
+                self.reset_elements()
+            if result.get('results') is not None:
+                self.youtube_results = result['results']
+            return result
+        # Reuse a live result tab without refreshing it, even beyond cache TTL.
+        for page in self.context.pages:
+            if not page.is_closed() and page.url == url and page.evaluate('''() =>
+                Boolean(document.querySelector('#search, #rso, .mw-search-results, [data-testid=results-list], a#video-title[href*="/watch?"]'))'''):
+                self.active_page = page
+                self.reset_elements()
+                return {'reuse_page': True}
+        return self.request_policy.begin(url)
+
     def quick_search(self, command):
         """Navigate within one shared 4.5-second budget, without model calls."""
         if command['site'] == 'youtube':
             return self.youtube_search(command['query'])
         if not self.domain_allowed(command['url']):
             return {'error': 'Search website is not approved.'}
+        prepared = self.prepare_search(command["url"])
+        if prepared and not prepared.get("reuse_page"):
+            return prepared
         page = self.page()
         self.reset_elements()
         deadline = time.monotonic() + 4.5
         try:
-            response = page.goto(command['url'], wait_until='commit', timeout=4500)
-            if response and response.status >= 400:
-                return {'error': f'Search returned HTTP {response.status}.'}
+            response = None if prepared else page.goto(command['url'], wait_until='commit', timeout=4500)
             page.wait_for_load_state('domcontentloaded',
                 timeout=max(1, int((deadline - time.monotonic()) * 1000)))
             if not self.domain_allowed(page.url):
                 return {'error': 'Search redirected outside approved websites.'}
-            return {'query': command['query'], 'url': page.url, 'ready': True}
+            blocked = self.verification_state()
+            if blocked:
+                return blocked
+            if response and response.status >= 400:
+                return {'error': f'Search returned HTTP {response.status}.'}
+            result = {'query': command['query'], 'url': page.url, 'ready': True, 'reused': bool(prepared)}
+            self.request_policy.save(command['url'], page, result)
+            return result
         except BrowserTimeout:
+            blocked = self.verification_state()
+            if blocked:
+                return blocked
             return {'error': 'Search exceeded the fast response budget; the page may still be loading.'}
 
     def element(self, index):
@@ -503,6 +556,13 @@ class UniversalBrowser:
 
 
     def navigate(self, url):
+        blocked = self.verification_state(url)
+        if blocked:
+            return blocked
+        repeated = self.request_policy.begin(url)
+        if repeated:
+            return repeated
+
 
         if not self.approve_domain(url):
 
@@ -543,6 +603,13 @@ class UniversalBrowser:
 
 
     def open_tab(self, url):
+        blocked = self.verification_state(url)
+        if blocked:
+            return blocked
+        repeated = self.request_policy.begin(url)
+        if repeated:
+            return repeated
+
 
         if not self.approve_domain(url):
 
@@ -700,6 +767,9 @@ class UniversalBrowser:
 
 
 
+        blocked = verification(page)
+        if blocked:
+            return blocked
         page.close()
 
 
@@ -798,6 +868,19 @@ class UniversalBrowser:
 
 
 
+            if href:
+                repeated = self.request_policy.begin(target)
+                if repeated:
+                    return repeated
+            elif tag == 'button' and ('search' in label or 'find' in label):
+                form_key = loc.evaluate("""el => {
+                    const form = el.closest('form');
+                    const fields = form ? [...form.querySelectorAll('input')].map(i => [i.name, i.value]) : [];
+                    return JSON.stringify([form?.action || location.href, fields]);
+                }""")
+                repeated = self.request_policy.begin('form:' + form_key)
+                if repeated:
+                    return repeated
             old_pages = set(self.context.pages)
 
 
@@ -978,6 +1061,14 @@ class UniversalBrowser:
 
 
 
+            form_key = item['locator'].evaluate("""el => {
+                const form = el.closest('form');
+                const fields = form ? [...form.querySelectorAll('input')].map(i => [i.name, i.value]) : [[el.name, el.value]];
+                return JSON.stringify([form?.action || location.origin + location.pathname, fields]);
+            }""")
+            repeated = self.request_policy.begin('form:' + form_key)
+            if repeated:
+                return repeated
             item["locator"].press(
 
                 "Enter", timeout=4000
@@ -1066,6 +1157,9 @@ class UniversalBrowser:
         url = 'https://www.youtube.com/results?search_query=' + quote_plus(query.strip()[:200])
         if not self.domain_allowed(url):
             return {'error': 'YouTube is not approved.'}
+        prepared = self.prepare_search(url)
+        if prepared and not prepared.get('reuse_page'):
+            return prepared
         self.youtube_results = []
         self.reset_elements()
         timings = []
@@ -1073,7 +1167,11 @@ class UniversalBrowser:
         try:
             page = self.page()
             with measure('search.navigate', timings):
-                response = page.goto(url, wait_until='commit', timeout=4500)
+                response = None if prepared else page.goto(url, wait_until='commit', timeout=4500)
+            page.wait_for_load_state('domcontentloaded', timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+            blocked = self.verification_state()
+            if blocked:
+                return blocked
             if response and response.status >= 400:
                 return {'error': f'YouTube returned HTTP {response.status}.'}
             with measure('search.results_ready', timings):
@@ -1096,9 +1194,15 @@ class UniversalBrowser:
                     break
             if not self.youtube_results:
                 return {'error': 'No video results are available yet.'}
-            return {'query': query, 'results': self.youtube_results, 'url': page.url, 'timings': timings}
+            blocked = self.verification_state()
+            if blocked:
+                return blocked
+            result = {'query': query, 'results': self.youtube_results, 'url': page.url, 'timings': timings, 'reused': bool(prepared)}
+            self.request_policy.save(url, page, result)
+            return result
         except Exception as exc:
-            return {'error': f'YouTube search unavailable: {exc}'}
+            blocked = self.verification_state()
+            return blocked or {'error': f'YouTube search unavailable: {exc}'}
 
     def youtube_open_video(self, index):
         """Opening a watch page is separate from verified playback."""
@@ -1183,6 +1287,11 @@ class UniversalBrowser:
 
 
     def execute(self, name, args):
+        if name not in ('list_tabs', 'switch_tab', 'close_tab', 'scroll_page'):
+            blocked = self.verification_state(args.get('url'))
+            if blocked:
+                return blocked
+
 
         actions = {
 
@@ -1224,7 +1333,10 @@ class UniversalBrowser:
 
         try:
 
-            return actions[name](**args)
+            result = actions[name](**args)
+            if name in ('navigate', 'open_tab', 'youtube_open_video', 'click_element', 'press_enter'):
+                return self.verification_state() or result
+            return result
 
         except Exception as exc:
 
@@ -1570,10 +1682,11 @@ def run_agent(browser, instruction):
     timings = []
 
     tool_errors = []
+    network_calls = set()
 
 
 
-    def finish(outcome, message):
+    def finish(outcome, message, verification_evidence=None):
 
         """
 
@@ -1595,6 +1708,8 @@ def run_agent(browser, instruction):
         return {
 
             "outcome": outcome,
+            "human_intervention_required": outcome == "paused",
+            "verification": verification_evidence,
 
             "message": message,
 
@@ -1618,6 +1733,8 @@ def run_agent(browser, instruction):
             with measure(f'direct.{name}', timings):
                 result = browser.execute(name, args)
             actions_taken = 1
+            if result.get("human_intervention_required"):
+                return finish("paused", result["error"], result.get("verification"))
             if result.get('error'):
                 tool_errors.append({'tool': name, 'message': str(result['error'])})
                 return finish('incomplete', str(result['error']))
@@ -1642,6 +1759,8 @@ def run_agent(browser, instruction):
             with measure('search.direct', timings):
                 result = browser.quick_search(command)
             actions_taken = 1
+            if result.get("human_intervention_required"):
+                return finish("paused", result["error"], result.get("verification"))
             if 'error' in result:
                 tool_errors.append({'tool': 'quick_search', 'message': result['error']})
                 return finish('incomplete', result['error'])
@@ -1655,6 +1774,8 @@ def run_agent(browser, instruction):
             with measure('video.search', timings):
                 initial_state = browser.execute('youtube_search', {'query': video_query})
             actions_taken += 1
+            if initial_state.get("human_intervention_required"):
+                return finish("paused", initial_state["error"], initial_state.get("verification"))
             if initial_state.get('error'):
                 return finish('incomplete', str(initial_state['error']))
         else:
@@ -1662,6 +1783,9 @@ def run_agent(browser, instruction):
                 initial_state = browser.observe_page()
 
 
+
+        if initial_state.get("human_intervention_required"):
+            return finish("paused", initial_state["error"], initial_state.get("verification"))
 
         conversation = [
 
@@ -1728,12 +1852,21 @@ def run_agent(browser, instruction):
 
 
         while actions_taken < MAX_STEPS:
+            if callable(getattr(browser, 'verification_state', None)):
+                blocked = browser.verification_state()
+                if isinstance(blocked, dict) and blocked.get('human_intervention_required'):
+                    return finish('paused', blocked['error'], blocked.get('verification'))
             if time.monotonic() - started_at >= 30:
                 return finish('incomplete', 'The task reached its time budget. Completed actions were not replayed.')
 
             with measure('gemini.turn', timings):
                 response = call_with_browser_events(
                     lambda: generate(contents=conversation, config=config), browser.context)
+
+            if callable(getattr(browser, 'verification_state', None)):
+                blocked = browser.verification_state()
+                if isinstance(blocked, dict) and blocked.get('human_intervention_required'):
+                    return finish('paused', blocked['error'], blocked.get('verification'))
 
 
 
@@ -1843,6 +1976,11 @@ def run_agent(browser, instruction):
 
                 else:
 
+                    if name in ('navigate', 'open_tab', 'youtube_search', 'youtube_open_video', 'press_enter'):
+                        signature = (name, repr(sorted(args.items())), browser.page().url if name == 'press_enter' else '')
+                        if signature in network_calls:
+                            return finish('incomplete', 'Repeated network action stopped to prevent a navigation or search loop. Explicitly retry if needed.')
+                        network_calls.add(signature)
                     print(f"\n[ACTION] {name}: {args}")
 
 
@@ -1853,6 +1991,8 @@ def run_agent(browser, instruction):
 
 
                     actions_taken += 1
+                    if isinstance(result, dict) and result.get("human_intervention_required"):
+                        return finish("paused", result["error"], result.get("verification"))
                     if video_query and name == 'youtube_open_video':
                         if result.get('error'):
                             return finish('incomplete', str(result['error']))

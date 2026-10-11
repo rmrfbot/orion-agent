@@ -239,7 +239,7 @@ function App() {
             </div>
           )}
 
-          {!busy && lastInstruction && (task?.status === 'failed' || task?.status === 'incomplete' || notice) &&
+          {!busy && lastInstruction && (task?.status === 'failed' || task?.status === 'incomplete' || task?.status === 'paused' || notice) &&
             <button className="retry-button" disabled={!connected || (!desktop && !token.trim())}
               onClick={() => void submit(lastInstruction)}>Retry last command</button>}
           <form
@@ -296,7 +296,7 @@ function App() {
           <div className={`task-status ${task?.status ?? 'standby'}`} role="status">
             {task?.status === "finished" ? (
               <CheckCircle2 size={17} />
-            ) : task?.status === 'failed' || task?.status === 'incomplete' ? (
+            ) : task?.status === 'failed' || task?.status === 'incomplete' || task?.status === 'paused' ? (
               <CircleAlert size={17} />
             ) : task ? (
               <LoaderCircle size={17} className="spin" />
