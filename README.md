@@ -17,8 +17,8 @@ The direct route uses a shared 4.5-second navigation/readiness budget and the
 dashboard polls every 250 ms. If the page is not ready within that budget, ORION
 reports an incomplete search. Five seconds is a warm-session target, not a
 guarantee: Chrome startup, queue delays, network latency, and complex AI tasks
-can take longer. Execution time is shown in telemetry; it excludes startup and
-queue time.
+can take longer. API-mode execution telemetry includes queue and browser startup
+time. Per-stage monotonic timings are available in task results and `[PERF]` logs.
 
 On YouTube, a page-local watcher clicks visible, enabled Skip Ad controls as
 they become available, including on restored tabs and during idle playback.
@@ -33,3 +33,10 @@ Run the focused tests from the project root with:
 
 These tests use local page fixtures in headless Chrome; they do not contact
 Gemini or validate live YouTube latency.
+
+The ad monitor uses mutation-driven detection with a 100 ms visibility fallback.
+Explicit playback checks require the video position to advance; a general page
+observation labels active playback as unverified to avoid adding a fixed wait.
+
+See [the latency audit and measured benchmarks](docs/latency-optimization.md)
+for the execution path, measurement limits, validation, and changed files.

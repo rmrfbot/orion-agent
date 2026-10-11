@@ -1,11 +1,13 @@
 import queue
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin
 from uuid import uuid4
 
 from playwright.sync_api import sync_playwright
+from backend.performance import measure, logger
 
 ROOT = Path(__file__).resolve().parent.parent
 PROFILE = ROOT / ".orion_chrome_profile"
@@ -77,6 +79,7 @@ class BrowserWorker:
         self.running = False
         self.context = None
         self.safe_browser = None
+        self.submitted_at = {}
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -110,11 +113,13 @@ class BrowserWorker:
         }
         with self.lock:
             self.tasks[task_id] = task
+            self.submitted_at[task_id] = time.perf_counter()
         try:
             self.task_queue.put_nowait(task_id)
         except queue.Full:
             with self.lock:
                 del self.tasks[task_id]
+                self.submitted_at.pop(task_id, None)
             raise RuntimeError("Task queue is full.")
         return dict(task)
 
@@ -147,7 +152,9 @@ class BrowserWorker:
             pages = [p for p in self.context.pages if not p.is_closed()]
             if not pages:
                 return False
-            pages[0].evaluate("1")
+            if not self.context.browser or not self.context.browser.is_connected():
+                return False
+            pages[0].evaluate('1')  # Detect a crashed renderer, not only a disconnected browser.
             return True
         except Exception:
             return False
@@ -179,7 +186,7 @@ class BrowserWorker:
                     base.reset_elements()
                 else:
                     self._close_browser()
-            if self._browser_alive():
+            if self.context is not None and self.safe_browser is not None:
                 return self.safe_browser
 
         self._close_browser()
@@ -220,11 +227,20 @@ class BrowserWorker:
         if task is None:
             return
         self.update_task(task_id, status="running")
+        started = time.perf_counter()
+        with self.lock:
+            submitted = self.submitted_at.pop(task_id, started)
+        timings = [{'stage': 'worker.queue', 'elapsed_ms': round((started - submitted) * 1000, 3)}]
         try:
-            browser = self._ensure_browser(playwright, UniversalBrowser, START_URL)
-            result = run_agent(browser, task["instruction"])
+            with measure('browser.ensure', timings):
+                browser = self._ensure_browser(playwright, UniversalBrowser, START_URL)
+            with measure('agent.run', timings):
+                result = run_agent(browser, task["instruction"])
             if not isinstance(result, dict):
                 raise RuntimeError("Agent returned an invalid result.")
+            result['workflow_timings'] = timings
+            result['total_elapsed_ms'] = round((time.perf_counter() - submitted) * 1000, 3)
+            logger.info('[PERF] task.total %.3f ms', result['total_elapsed_ms'])
             outcome = result.get("outcome")
             status = (
                 "finished" if outcome == "finished" else

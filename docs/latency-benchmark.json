@@ -1,0 +1,202 @@
+{
+  "environment": {
+    "chrome": "154.0.8037.98",
+    "mode": "headless",
+    "network": "local route.fulfill fixtures, no live YouTube or Gemini",
+    "clock": "performance.now in-page; perf_counter in Python",
+    "runs": 30,
+    "skip_scenario": "rapid successive inserted/enabled controls"
+  },
+  "before": {
+    "skip_eligible_to_click": {
+      "n": 30,
+      "p50_ms": 721.9,
+      "p95_ms": 729.2,
+      "max_ms": 742
+    },
+    "fixture_click_to_control_removed": {
+      "n": 30,
+      "p50_ms": 5.5,
+      "p95_ms": 6.6,
+      "max_ms": 6.7
+    },
+    "fixture_eligibility_wait": {
+      "n": 30,
+      "p50_ms": 13.4,
+      "p95_ms": 15.2,
+      "max_ms": 16.1
+    },
+    "skip_css_fallback": {
+      "n": 30,
+      "p50_ms": 222.4,
+      "p95_ms": 229.9,
+      "max_ms": 231.6
+    },
+    "youtube_search": {
+      "n": 30,
+      "p50_ms": 107.881,
+      "p95_ms": 138.131,
+      "max_ms": 138.783
+    },
+    "video_open_and_play": {
+      "n": 30,
+      "p50_ms": 237.825,
+      "p95_ms": 474.573,
+      "max_ms": 491.384
+    },
+    "playback_verify": {
+      "n": 30,
+      "p50_ms": 72.043,
+      "p95_ms": 86.341,
+      "max_ms": 146.395
+    },
+    "page_observation": {
+      "n": 30,
+      "p50_ms": 2.574,
+      "p95_ms": 3.91,
+      "max_ms": 6.446
+    }
+  },
+  "after": {
+    "skip_eligible_to_click": {
+      "n": 30,
+      "p50_ms": 0.1,
+      "p95_ms": 1.2,
+      "max_ms": 1.7
+    },
+    "fixture_click_to_control_removed": {
+      "n": 30,
+      "p50_ms": 5.8,
+      "p95_ms": 6.7,
+      "max_ms": 6.9
+    },
+    "fixture_eligibility_wait": {
+      "n": 30,
+      "p50_ms": 12.5,
+      "p95_ms": 15.2,
+      "max_ms": 15.8
+    },
+    "skip_detection": {
+      "n": 30,
+      "p50_ms": 0.1,
+      "p95_ms": 1.0,
+      "max_ms": 1.7
+    },
+    "skip_detection_to_dispatch": {
+      "n": 30,
+      "p50_ms": 0.0,
+      "p95_ms": 0.1,
+      "max_ms": 0.1
+    },
+    "skip_dispatch_to_confirm": {
+      "n": 30,
+      "p50_ms": 5.8,
+      "p95_ms": 6.8,
+      "max_ms": 7
+    },
+    "monitor_counters": {
+      "scans": 1,
+      "checks": 50,
+      "mutations": 135,
+      "clicks": 30
+    },
+    "skip_css_fallback": {
+      "n": 30,
+      "p50_ms": 73.3,
+      "p95_ms": 81.8,
+      "max_ms": 82.2
+    },
+    "youtube_search": {
+      "n": 30,
+      "p50_ms": 111.766,
+      "p95_ms": 119.434,
+      "max_ms": 120.097
+    },
+    "youtube_search_stages": {
+      "search.navigate": {
+        "n": 30,
+        "p50_ms": 42.645,
+        "p95_ms": 51.109,
+        "max_ms": 57.504
+      },
+      "search.results_ready": {
+        "n": 30,
+        "p50_ms": 52.104,
+        "p95_ms": 57.451,
+        "max_ms": 58.624
+      },
+      "search.extract": {
+        "n": 30,
+        "p50_ms": 15.112,
+        "p95_ms": 17.343,
+        "max_ms": 17.534
+      }
+    },
+    "video_open_and_play": {
+      "n": 30,
+      "p50_ms": 483.728,
+      "p95_ms": 511.374,
+      "max_ms": 512.813
+    },
+    "video_open_and_play_stages": {
+      "video.navigate": {
+        "n": 30,
+        "p50_ms": 38.547,
+        "p95_ms": 58.857,
+        "max_ms": 61.281
+      },
+      "video.attach": {
+        "n": 30,
+        "p50_ms": 74.88,
+        "p95_ms": 80.483,
+        "max_ms": 89.864
+      },
+      "video.playback_verify": {
+        "n": 30,
+        "p50_ms": 370.707,
+        "p95_ms": 379.024,
+        "max_ms": 382.668
+      }
+    },
+    "playback_verify": {
+      "n": 30,
+      "p50_ms": 356.983,
+      "p95_ms": 368.436,
+      "max_ms": 368.518
+    },
+    "page_observation": {
+      "n": 30,
+      "p50_ms": 2.739,
+      "p95_ms": 3.688,
+      "max_ms": 3.911
+    }
+  },
+  "recovery_before": {
+    "cold_or_recovery": {
+      "n": 3,
+      "p50_ms": 665.126,
+      "p95_ms": 709.889,
+      "max_ms": 709.889
+    },
+    "warm_reuse": {
+      "n": 3,
+      "p50_ms": 6.232,
+      "p95_ms": 7.075,
+      "max_ms": 7.075
+    }
+  },
+  "recovery_after": {
+    "cold_or_recovery": {
+      "n": 3,
+      "p50_ms": 703.163,
+      "p95_ms": 723.615,
+      "max_ms": 723.615
+    },
+    "warm_reuse": {
+      "n": 3,
+      "p50_ms": 3.535,
+      "p95_ms": 3.823,
+      "max_ms": 3.823
+    }
+  }
+}

@@ -15,6 +15,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from backend.browser_worker import BrowserWorker
+from backend.performance import measure
 
 
 # ============================================================
@@ -158,7 +159,8 @@ def create_task(command: BrowserCommand):
         )
 
     try:
-        task = worker.submit(command.instruction)
+        with measure('api.submit'):
+            task = worker.submit(command.instruction)
 
         print(
             f"\n[API] New task submitted: "

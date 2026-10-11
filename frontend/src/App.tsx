@@ -26,6 +26,7 @@ type TaskStatus =
 
 type TaskResult = {
   elapsed_ms?: number;
+  total_elapsed_ms?: number;
   outcome?: string;
   message?: string;
   actions_taken?: number;
@@ -190,6 +191,7 @@ function App() {
     addMessage("user", instruction);
 
     try {
+      const submittedAt = performance.now();
       const created = (await request("/api/tasks", {
         method: "POST",
         headers: {
@@ -231,6 +233,7 @@ function App() {
           "Mission is still running. The dashboard stopped waiting, but the browser worker may continue executing it."
         );
       } else {
+        console.debug('[PERF] command_to_result_ms', performance.now() - submittedAt);
         addMessage(
           "assistant",
           finalTask.result?.message ||
@@ -523,8 +526,8 @@ function App() {
           <div className="metric-row">
             <span>Execution time</span>
             <strong>
-              {task?.result?.elapsed_ms != null
-                ? `${(task.result.elapsed_ms / 1000).toFixed(1)}s`
+              {(task?.result?.total_elapsed_ms ?? task?.result?.elapsed_ms) != null
+                ? `${((task?.result?.total_elapsed_ms ?? task?.result?.elapsed_ms ?? 0) / 1000).toFixed(1)}s`
                 : "—"}
             </strong>
           </div>

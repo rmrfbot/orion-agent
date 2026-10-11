@@ -24,8 +24,10 @@ from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
 
 try:
     from backend.fast_commands import search_command
+    from backend.performance import measure
 except ModuleNotFoundError:
     from fast_commands import search_command
+    from performance import measure
 
 
 
@@ -203,48 +205,8 @@ def host_matches(host, domain):
 # Observe the ordinary YouTube Skip Ad button. This code never
 # changes player timers, requests, or YouTube's ad delivery.
 # It clicks only a visible skip control provided by YouTube.
-YOUTUBE_SKIP_SCRIPT = r"""
-(() => {
-  if (!/(^|\.)youtube\.com$/.test(location.hostname)) return;
-  if (window.__orionSkipWatcher) return;
-  window.__orionSkipWatcher = true;
-
-  const selectors = [
-    '.ytp-ad-skip-button',
-    '.ytp-ad-skip-button-modern',
-    '.ytp-skip-ad-button',
-    'button.ytp-ad-skip-button',
-    '.ytp-ad-skip-button-container button'
-  ];
-  let lastClick = 0;
-  const trySkip = () => {
-    if (Date.now() - lastClick < 500) return;
-    for (const selector of selectors) {
-      const button = document.querySelector(selector);
-      if (!button || button.disabled) continue;
-      const style = getComputedStyle(button);
-      const visible = button.getClientRects().length > 0 &&
-        style.visibility !== 'hidden' && style.display !== 'none';
-      if (visible) {
-        lastClick = Date.now();
-        button.click();
-        break;
-      }
-    }
-  };
-  const start = () => {
-    trySkip();
-    new MutationObserver(trySkip).observe(document.documentElement, {
-      childList: true, subtree: true, attributes: true,
-      attributeFilter: ['class', 'style', 'disabled']
-    });
-    setInterval(trySkip, 250);
-  };
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, {once:true});
-  } else { start(); }
-})();
-"""
+YOUTUBE_SKIP_SCRIPT = (Path(__file__).with_name('youtube_monitor.js')).read_text(encoding='utf-8')
+YOUTUBE_PLAYBACK_SCRIPT = (Path(__file__).with_name('youtube_playback.js')).read_text(encoding='utf-8')
 
 
 class UniversalBrowser:
@@ -458,24 +420,28 @@ class UniversalBrowser:
         self.observed_page = page
         return {'observation': f"URL: {page.url}\nTitle: {snapshot['title']}\n"
                 f"Visible text:\n{snapshot['body']}\nInteractive elements:\n" + '\n'.join(lines),
-                'media': self.media_state()}
+                'media': self.media_state(verify=False)}
 
-    def media_state(self):
+    def media_state(self, verify=True):
         page = self.page()
         if not host_matches(get_host(page.url), 'youtube.com'):
             return {'site': get_host(page.url)}
-        return page.evaluate("""() => {
-            const video = document.querySelector('video');
-            const ad = !!document.querySelector('.html5-video-player.ad-showing');
-            const skip = Array.from(document.querySelectorAll(
-              '.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button'))
-              .some(el => el.getClientRects().length && !el.disabled &&
-                getComputedStyle(el).visibility !== 'hidden');
-            return {site: 'youtube', video_present: !!video,
-              playing: !!video && !video.paused && !video.ended,
-              ad_playing: ad, skip_available: skip,
-              auto_skip_enabled: !!window.__orionSkipWatcher};
-        }""")
+        # General page observations report playback as unverified without waiting.
+        # Explicit media checks verify progress, not just !paused.
+        with measure('playback.verify' if verify else 'playback.snapshot'):
+            playback = page.evaluate(YOUTUBE_PLAYBACK_SCRIPT,
+                {'start': False, 'interval_ms': 350, 'verify': verify})
+        monitor = playback['skip_metrics']
+        return {'site': 'youtube', **playback, 'skip_available': monitor['skip_available'],
+                'auto_skip_enabled': monitor['enabled'], 'skip_metrics': monitor}
+
+    def stop_monitors(self):
+        for page in self.context.pages:
+            if not page.is_closed():
+                try:
+                    page.evaluate('() => window.__orionSkipWatcher?.stop?.()')
+                except Exception:
+                    pass
 
     def quick_search(self, command):
         """Navigate within one shared 4.5-second budget, without model calls."""
@@ -1101,16 +1067,20 @@ class UniversalBrowser:
             return {'error': 'YouTube is not approved.'}
         self.youtube_results = []
         self.reset_elements()
+        timings = []
         deadline = time.monotonic() + 4.5
         try:
             page = self.page()
-            response = page.goto(url, wait_until='commit', timeout=4500)
+            with measure('search.navigate', timings):
+                response = page.goto(url, wait_until='commit', timeout=4500)
             if response and response.status >= 400:
                 return {'error': f'YouTube returned HTTP {response.status}.'}
-            page.locator('a#video-title[href*="/watch?"]').first.wait_for(
-                state='attached', timeout=max(1, int((deadline - time.monotonic()) * 1000)))
-            raw = page.locator('a#video-title').evaluate_all("""links => links.slice(0, 40)
-                .map(a => ({url: a.href, title: (a.title || a.innerText || '').trim()}))""")
+            with measure('search.results_ready', timings):
+                page.locator('a#video-title[href*="/watch?"]').first.wait_for(
+                    state='attached', timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+            with measure('search.extract', timings):
+                raw = page.locator('a#video-title').evaluate_all("""links => links.slice(0, 40)
+                    .map(a => ({url: a.href, title: (a.title || a.innerText || '').trim()}))""")
             seen = set()
             for item in raw:
                 parsed = urlparse(item['url'])
@@ -1125,69 +1095,71 @@ class UniversalBrowser:
                     break
             if not self.youtube_results:
                 return {'error': 'No video results are available yet.'}
-            return {'query': query, 'results': self.youtube_results, 'url': page.url}
+            return {'query': query, 'results': self.youtube_results, 'url': page.url, 'timings': timings}
         except Exception as exc:
             return {'error': f'YouTube search unavailable: {exc}'}
 
     def youtube_open_video(self, index):
-        """Open one of the numbered results from youtube_search."""
+        """Opening a watch page is separate from verified playback."""
         if not isinstance(index, int) or not 0 <= index < len(self.youtube_results):
-            return {"error": "Invalid YouTube result index. Search again first."}
+            return {'error': 'Invalid YouTube result index. Search again first.'}
         selected = self.youtube_results[index]
-        url = selected["url"]
+        url = selected['url']
         if not self.domain_allowed(url):
-            return {"error": "YouTube video URL is not approved."}
+            return {'error': 'YouTube video URL is not approved.'}
+        page = self.page()
+        self.reset_elements()
+        timings = []
+        deadline = time.monotonic() + 8
         try:
-            page = self.page()
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            self.reset_elements()
-            page.locator("video").first.wait_for(state="attached", timeout=12000)
-            return {
-                "opened": True,
-                "selected_title": selected["title"],
-                "page_title": page.title(),
-                "url": page.url,
-                "playback": self.youtube_play(),
-                "ads": "Watching for YouTube's normal Skip Ad button when available."
-            }
+            with measure('video.navigate', timings):
+                response = page.goto(url, wait_until='commit', timeout=8000)
+            if response and response.status >= 400:
+                return {'error': f'Video returned HTTP {response.status}.'}
+            if not self.domain_allowed(page.url):
+                return {'error': 'Video redirected outside approved websites.'}
+            with measure('video.attach', timings):
+                try:
+                    page.locator('video').first.wait_for(state='attached',
+                        timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+                except BrowserTimeout:
+                    return {'opened': True, 'selected_title': selected['title'], 'url': page.url,
+                            'playback': {'playing': False, 'state': 'loading', 'video_present': False},
+                            'timings': timings}
+            with measure('video.playback_verify', timings):
+                playback = self.youtube_play()
+            return {'opened': True, 'selected_title': selected['title'],
+                    'page_title': page.title(), 'url': page.url,
+                    'playback': playback, 'timings': timings,
+                    'ads': 'Watching for YouTube Skip Ad controls when available.'}
         except Exception as exc:
-            return {"error": f"Could not open video: {exc}"}
+            return {'error': f'Could not open video: {exc}'}
 
     def youtube_play(self):
-        """Attempt playback, but never claim success without player state."""
         try:
             page = self.page()
-            if get_host(page.url) not in ("youtube.com", "www.youtube.com"):
-                return {"error": "Not on YouTube."}
-            video = page.locator("video").first
-            video.wait_for(state="attached", timeout=8000)
-            result = video.evaluate('''async (v) => {
-                try { await v.play(); }
-                catch (e) { return {playing: !v.paused, reason: String(e)}; }
-                return {playing: !v.paused, paused: v.paused};
-            }''')
-            return result
+            if not host_matches(get_host(page.url), 'youtube.com'):
+                return {'error': 'Not on YouTube.'}
+            with measure('playback.start_verify'):
+                return page.evaluate(YOUTUBE_PLAYBACK_SCRIPT, {'start': True, 'interval_ms': 350})
         except Exception as exc:
-            return {"playing": False, "reason": str(exc)}
+            return {'playing': False, 'state': 'error', 'reason': str(exc)}
 
     def youtube_skip_ad(self):
-        """Click YouTube's own Skip Ad button when visible."""
         try:
             page = self.page()
-            if get_host(page.url) not in ("youtube.com", "www.youtube.com"):
-                return {"error": "Not on YouTube."}
-            selectors = (
-                ".ytp-ad-skip-button, .ytp-ad-skip-button-modern, "
-                ".ytp-skip-ad-button, button.ytp-ad-skip-button, "
-                ".ytp-ad-skip-button-container button"
-            )
-            for button in page.locator(selectors).all():
-                if button.is_visible() and button.is_enabled():
-                    button.click(timeout=1500)
-                    return {"skipped": True, "message": "Clicked YouTube Skip Ad."}
-            return {"skipped": False, "message": "No available Skip Ad button."}
+            if not host_matches(get_host(page.url), 'youtube.com'):
+                return {'error': 'Not on YouTube.'}
+            with measure('skip.manual'):
+                result = page.evaluate("""() => {
+                    const monitor = window.__orionSkipWatcher;
+                    const skipped = !!monitor?.skip?.();
+                    return {skipped, metrics: monitor?.snapshot?.() || null};
+                }""")
+            return {**result, 'message': 'Dispatched YouTube Skip Ad click.' if result['skipped']
+                    else 'No available Skip Ad button, or a click is awaiting confirmation.'}
         except Exception as exc:
-            return {"skipped": False, "reason": str(exc)}
+            return {'skipped': False, 'reason': str(exc)}
 
     # EXECUTION DISPATCH
 
@@ -1308,7 +1280,7 @@ TOOLS = [
     ),
     tool(
         "youtube_play",
-        "Attempt to start playback of the current YouTube video.",
+        "Attempt playback and verify currentTime advances; reports loading, buffering, paused, ad, or error.",
     ),
     tool(
         "youtube_skip_ad",
@@ -1491,6 +1463,9 @@ Rules:
 14. For YouTube video requests, prefer youtube_search and youtube_open_video.
     Use media_state to inspect playback and ad availability without a full observation.
     Automatic ad skipping continues while you are idle; do not repeatedly poll with tools.
+    A watch URL or paused=false is not proof of playback. Report playback.playing only
+    when progress_verified is true; distinguish advertisement from the requested video.
+    If buffering/loading, do not repeatedly click or call youtube_play. Report that state.
     Inspect search result titles, do not assert an upload is official without evidence.
     The YouTube skip watcher only clicks visible, ordinary Skip Ad buttons.
     Never claim an unskippable ad was skipped.
@@ -1541,15 +1516,12 @@ def generate(contents, config):
 
 
 
-                return client.models.generate_content(
-
-                    model=model,
-
-                    contents=contents,
-
-                    config=config,
-
-                )
+                with measure('gemini.request'):
+                    return client.models.generate_content(
+                        model=model,
+                        contents=contents,
+                        config=config,
+                    )
 
 
 
@@ -1659,6 +1631,7 @@ def run_agent(browser, instruction):
 
     started_at = time.monotonic()
     actions_taken = 0
+    timings = []
 
     tool_errors = []
 
@@ -1674,7 +1647,8 @@ def run_agent(browser, instruction):
 
         try:
 
-            tabs = browser.list_tabs()
+            with measure('task.tabs', timings):
+                tabs = browser.list_tabs()
 
         except Exception:
 
@@ -1690,6 +1664,7 @@ def run_agent(browser, instruction):
 
             "tabs": tabs,
 
+            "timings": timings,
             "elapsed_ms": round((time.monotonic() - started_at) * 1000),
             "actions_taken": actions_taken,
 
@@ -1703,7 +1678,8 @@ def run_agent(browser, instruction):
 
         command = search_command(instruction, browser.page().url)
         if command:
-            result = browser.quick_search(command)
+            with measure('search.direct', timings):
+                result = browser.quick_search(command)
             actions_taken = 1
             if 'error' in result:
                 tool_errors.append({'tool': 'quick_search', 'message': result['error']})
@@ -1713,7 +1689,8 @@ def run_agent(browser, instruction):
                 message += '\n' + '\n'.join(
                     f"{item['index'] + 1}. {item['title']}" for item in result['results'][:5])
             return finish('finished', message)
-        initial_state = browser.observe_page()
+        with measure('page.initial_observation', timings):
+            initial_state = browser.observe_page()
 
 
 
@@ -1781,13 +1758,8 @@ def run_agent(browser, instruction):
 
         while actions_taken < MAX_STEPS:
 
-            response = generate(
-
-                contents=conversation,
-
-                config=config,
-
-            )
+            with measure('gemini.turn', timings):
+                response = generate(contents=conversation, config=config)
 
 
 
@@ -1899,13 +1871,8 @@ def run_agent(browser, instruction):
 
 
 
-                    result = browser.execute(
-
-                        name,
-
-                        args,
-
-                    )
+                    with measure(f'tool.{name}', timings):
+                        result = browser.execute(name, args)
 
 
 
