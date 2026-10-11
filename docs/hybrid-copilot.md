@@ -34,17 +34,34 @@ npx.cmd tauri dev
 
 Close an older desktop if Windows reports `app.exe` locked, and close any separate Vite server on port 5173. The normal Tauri command starts Vite itself. Closing the desktop never terminates FastAPI or Chrome. No installer is built.
 
+## Chrome hands-free wake phrase
+
+In the Chrome-hosted ORION UI, select **Enable Hey Orion** and allow microphone
+and speech-recognition access when Chrome asks. Wake recognition stays off until
+you enable it and pauses while ORION records or executes a command. Say
+**“Hey Orion”**, then speak the command; Chrome speech recognition transcribes
+the command and sends its text through ORION's normal task API. If both words
+are spoken together, the recognized text after the wake phrase is used; if the
+wake phrase is spoken alone, ORION listens for the next utterance. Hiding or
+closing the page stops wake recognition.
+
+Wake and command recognition use Chrome's Web Speech recognition API, which may
+send microphone audio to an online recognition service. The separate desktop
+bubble only uses its microphone stream to animate its audio visualizer; it does
+not recognize or submit commands. Push to talk remains available as a fallback
+and sends a recorded clip to ElevenLabs for transcription.
+
 ## End-to-end demo check
 
 1. Launch compact ORION, confirm Connected and voice readiness, and drag the header above Chrome.
-2. Click Push to talk, allow microphone access, and confirm the visible Listening indicator. Say “ORION, open YouTube.”
-3. Click Stop & send. All microphone tracks are released. The raw transcript appears; only the leading ORION address is removed before the shared command pipeline receives the instruction. Verify one task runs and the text result appears immediately.
+2. In Chrome, select **Enable Hey Orion**, allow microphone and speech-recognition access, and confirm the listening indicator. Say “Hey Orion, open YouTube.” Alternatively, say “Hey Orion,” wait for the command prompt, then say “open YouTube.”
+3. Verify one task runs and the text result appears immediately. The wake phrase is removed from the recognized command before it enters the shared command pipeline.
 4. With speech unmuted, listen for the same response shown on screen. The speaker button toggles mute; Stop speaking cancels current/pending audio. If autoplay is blocked, Play response uses the already-fetched audio without another synthesis request.
 5. Expand Mission Control, inspect conversation/browser/voice telemetry, then Collapse. Pending tasks and transcript must remain intact.
 6. Minimize and press Ctrl+Shift+Space to restore/focus ORION. Expanded mode's sidebar lets you change the shortcut; it must include Ctrl and Shift. Conflicts retain the previous working registration. Preferences are saved locally; registrations are released on exit.
-7. Record again and click Cancel: nothing should be transcribed or executed. Check permission denial and device disconnection recovery. Minimizing/hiding cancels pending capture/transcription; already-submitted browser tasks continue normally.
+7. Record again and click Cancel: nothing should be transcribed or executed. Check permission denial and device disconnection recovery. Minimizing/hiding cancels pending capture/transcription and stops wake recognition; already-submitted browser tasks continue normally.
 
-Startup, showing the window and shortcuts never start recording. Capture is capped at 30 seconds; exceeding the limit cancels rather than executing a partial instruction. Typed commands work when voice is unavailable. Both input paths use CommandSession.submit, without a separate Gemini workflow or speech-summary model call. Playback confirmation requires progress-verified, non-ad playback evidence from the actual browser result; model wording alone cannot claim success.
+Startup, showing the window and shortcuts never start wake recognition or command recording; the user must enable the wake phrase from the Chrome UI. Capture is capped at 30 seconds; exceeding the limit cancels rather than executing a partial instruction. Typed commands work when voice is unavailable. Both input paths use CommandSession.submit, without a separate Gemini workflow or speech-summary model call. Playback confirmation requires progress-verified, non-ad playback evidence from the actual browser result; model wording alone cannot claim success.
 
 ## Transport and limits
 
@@ -65,10 +82,12 @@ Python: existing HTTPX 0.28.1 is explicitly declared in requirements-voice.txt; 
 - frontend/src/App.tsx and App.css: shared floating/expanded views, accessible controls, settings and lifecycle handling.
 - frontend/src/commands.ts: shared command-origin tracking and response callback.
 - frontend/src/desktop.ts: raw native audio transport, binary response handling and event subscriptions.
-- frontend/src/voice.ts: recording/transcription/speech controller with cancellation, mute and stale-result protection.
-- frontend/src/voice-browser.ts: browser/WebView2 microphone and media adapters.
+- frontend/src/voice.ts: push-to-talk recording/transcription/speech controller with cancellation, mute and stale-result protection.
+- frontend/src/voice-browser.ts: browser/WebView2 microphone and Chrome speech-recognition adapters.
+- frontend/src/wake-word.ts: opt-in Chrome wake-phrase and command-recognition lifecycle, restart handling and visible failure states.
 - frontend/src/audio.ts: bounded in-memory WAV conversion.
-- frontend/src/VoiceControls.tsx: accessible recording/cancel/mute/playback interface.
+- frontend/src/VoiceControls.tsx: accessible wake-phrase, recording/cancel/mute/playback controls.
+- frontend/tests/wake-word.test.mjs: wake phrase detection, restart, permission and cancellation tests.
 - frontend/src/window-session.ts: serialized mode transitions and shortcut preferences/conflict feedback.
 - frontend/src-tauri/src/overlay.rs: window sizing/restoration, drag/minimize/focus and shortcut registration.
 - frontend/src-tauri/src/voice.rs: scoped authenticated binary commands and size bounds.

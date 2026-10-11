@@ -65,4 +65,6 @@ in these explicit commands start at 1.
 ORION now launches as a floating copilot. Expand opens Mission Control;
 Ctrl+Shift+Space restores the desktop window. See the [hybrid copilot and voice
 guide](docs/hybrid-copilot.md) for ElevenLabs setup, microphone controls,
-startup commands, validation and demo limitations.
+startup commands, the optional “Hey Orion” wake phrase, validation and demo
+limitations. Chrome wake-phrase and command recognition may use an online
+speech service; it is off until explicitly enabled in the UI.

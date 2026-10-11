@@ -1,6 +1,7 @@
 import { recordingToWav } from './audio';
 import { transcribeAudio, synthesizeAudio } from './desktop';
 import type { VoiceIO } from './voice';
+import type { SpeechRecognizer } from './wake-word';
 
 export function browserVoiceIO(token=''): VoiceIO {
   return {
@@ -19,4 +20,16 @@ export function browserVoiceIO(token=''): VoiceIO {
     synthesize:(text,signal)=>synthesizeAudio(text,token,signal),
     audio:url=>new Audio(url),createURL:blob=>URL.createObjectURL(blob),revokeURL:url=>URL.revokeObjectURL(url),now:()=>performance.now(),
   };
+}
+
+type RecognitionConstructor = new () => SpeechRecognizer;
+type SpeechWindow = Window & {
+  SpeechRecognition?: RecognitionConstructor;
+  webkitSpeechRecognition?: RecognitionConstructor;
+};
+
+export function browserWakeRecognizer(): SpeechRecognizer | undefined {
+  const speechWindow=window as SpeechWindow;
+  const Recognition=speechWindow.SpeechRecognition??speechWindow.webkitSpeechRecognition;
+  return Recognition?new Recognition():undefined;
 }

@@ -19,10 +19,11 @@ import "./App.css";
 import { desktopCore, apiRequest, listenNative } from "./desktop";
 import { CommandSession, delay, statusLabels } from "./commands";
 import type { Request } from "./commands";
-import { VoiceSession } from './voice';
-import { browserVoiceIO } from './voice-browser';
+import { VoiceSession, commandFromTranscript } from './voice';
+import { browserVoiceIO, browserWakeRecognizer } from './voice-browser';
 import { VoiceControls } from './VoiceControls';
 import { WindowSession } from './window-session';
+import { WakeWordSession } from './wake-word';
 
 function App() {
   const [desktop, setDesktop] = useState(() => !!desktopCore());
@@ -46,6 +47,13 @@ function App() {
       submit:text=>session.submit(text,'voice')});
   });
   const voiceState=useSyncExternalStore(voice.subscribe,voice.getSnapshot);
+  const [wake]=useState(()=>new WakeWordSession({
+    createRecognizer:browserWakeRecognizer,
+    normalizeCommand:commandFromTranscript,
+    onCommand:text=>session.submit(commandFromTranscript(text),'voice'),
+  }));
+  const wakeState=useSyncExternalStore(wake.subscribe,wake.getSnapshot);
+  const [wakeSupported]=useState(()=>!!browserWakeRecognizer());
   const [shell]=useState(()=>{
     let storage:Storage|undefined;try{storage=localStorage;}catch{/* Optional preference. */}
     return new WindowSession({native:!!desktopCore(),storage,invoke:(command,args)=>{
@@ -61,20 +69,21 @@ function App() {
   const focusCommand=()=>document.querySelector<HTMLInputElement>('[aria-label="Browser command"]')?.focus();
   const mute=()=>{const value=!voiceState.muted;voice.setMuted(value);try{localStorage.setItem('orion.voice-muted',String(value));}catch{/* Optional preference. */}};
   const voiceControls=<VoiceControls voice={voice} state={voiceState} available={voiceAvailable}
-    disabled={busy||!connected||(!desktop&&!token.trim())} onMute={mute}/>;
+    disabled={busy||!connected||(!desktop&&!token.trim())} onMute={mute}
+    wake={wake} wakeState={wakeState} wakeSupported={wakeSupported}/>;
 
   useEffect(()=>{
     session.setResponseHandler((_text,task)=>{void voice.speak(task);});
     void shell.load();
-    const cancel=()=>{if(document.hidden)voice.suspend();};
-    const close=()=>voice.suspend();
+    const cancel=()=>{if(document.hidden){wake.stop();voice.suspend();}};
+    const close=()=>{wake.stop();voice.suspend();};
     document.addEventListener('visibilitychange',cancel);window.addEventListener('pagehide',close);
     let active=true;const cleanups:(()=>void)[]=[];
-    for(const [event,handler] of [['orion-inactive',()=>voice.suspend()],['orion-summoned',focusCommand]] as const){
+    for(const [event,handler] of [['orion-inactive',()=>{wake.stop();voice.suspend();}],['orion-summoned',focusCommand]] as const){
       void listenNative(event,handler).then(cleanup=>{if(active)cleanups.push(cleanup);else cleanup();}).catch(()=>{});
     }
-    return()=>{active=false;cleanups.forEach(fn=>fn());document.removeEventListener('visibilitychange',cancel);window.removeEventListener('pagehide',close);voice.dispose();session.setResponseHandler(undefined);};
-  },[session,voice,shell]);
+    return()=>{active=false;cleanups.forEach(fn=>fn());document.removeEventListener('visibilitychange',cancel);window.removeEventListener('pagehide',close);wake.dispose();voice.dispose();session.setResponseHandler(undefined);};
+  },[session,voice,shell,wake]);
 
   useEffect(()=>{
     requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('[aria-label="Browser command"]')?.focus());
@@ -158,7 +167,7 @@ function App() {
         <input aria-label="Browser command" placeholder="Or type a command..." value={input} onChange={event=>setInput(event.target.value)} maxLength={2000} disabled={commandDisabled}/>
         <button type="submit" aria-label="Send command" title="Send typed command" disabled={commandDisabled||!input.trim()||!connected||(!desktop&&!token.trim())}><ArrowUp size={18}/></button>
       </form>
-      <div className="floating-footer"><span>{windowState.shortcut}</span><span>Click mic to record; 30s max</span></div>
+      <div className="floating-footer"><span>{windowState.shortcut}</span><span>“Hey Orion” or push to talk; 30s max</span></div>
       {windowState.shortcut_error&&<p className="voice-notice">{windowState.shortcut_error}</p>}
     </div>
   </div>;
