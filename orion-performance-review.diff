@@ -1,0 +1,1945 @@
+﻿commit 3c9bb5202c74b428adb96ac839310838f3dec522
+Author:     schakka0401 <pranav.chakka@gmail.com>
+AuthorDate: Sat Oct 10 22:55:42 2026 -0500
+Commit:     schakka0401 <pranav.chakka@gmail.com>
+CommitDate: Sat Oct 10 22:55:42 2026 -0500
+
+    commit
+
+diff --git a/README.md b/README.md
+index 58f549d..5af4cf9 100644
+--- a/README.md
++++ b/README.md
+@@ -17,8 +17,8 @@ The direct route uses a shared 4.5-second navigation/readiness budget and the
+ dashboard polls every 250 ms. If the page is not ready within that budget, ORION
+ reports an incomplete search. Five seconds is a warm-session target, not a
+ guarantee: Chrome startup, queue delays, network latency, and complex AI tasks
+-can take longer. Execution time is shown in telemetry; it excludes startup and
+-queue time.
++can take longer. API-mode execution telemetry includes queue and browser startup
++time. Per-stage monotonic timings are available in task results and `[PERF]` logs.
+ 
+ On YouTube, a page-local watcher clicks visible, enabled Skip Ad controls as
+ they become available, including on restored tabs and during idle playback.
+@@ -33,3 +33,10 @@ Run the focused tests from the project root with:
+ 
+ These tests use local page fixtures in headless Chrome; they do not contact
+ Gemini or validate live YouTube latency.
++
++The ad monitor uses mutation-driven detection with a 100 ms visibility fallback.
++Explicit playback checks require the video position to advance; a general page
++observation labels active playback as unverified to avoid adding a fixed wait.
++
++See [the latency audit and measured benchmarks](docs/latency-optimization.md)
++for the execution path, measurement limits, validation, and changed files.
+diff --git a/backend/api.py b/backend/api.py
+index 9f8f145..a4a24cc 100644
+--- a/backend/api.py
++++ b/backend/api.py
+@@ -15,6 +15,7 @@ from fastapi import (
+ from pydantic import BaseModel, Field
+ 
+ from backend.browser_worker import BrowserWorker
++from backend.performance import measure
+ 
+ 
+ # ============================================================
+@@ -158,7 +159,8 @@ def create_task(command: BrowserCommand):
+         )
+ 
+     try:
+-        task = worker.submit(command.instruction)
++        with measure('api.submit'):
++            task = worker.submit(command.instruction)
+ 
+         print(
+             f"\n[API] New task submitted: "
+diff --git a/backend/browser_worker.py b/backend/browser_worker.py
+index 9c36597..5d21c9f 100644
+--- a/backend/browser_worker.py
++++ b/backend/browser_worker.py
+@@ -1,11 +1,13 @@
+ import queue
+ import threading
++import time
+ from datetime import datetime, timezone
+ from pathlib import Path
+ from urllib.parse import urljoin
+ from uuid import uuid4
+ 
+ from playwright.sync_api import sync_playwright
++from backend.performance import measure, logger
+ 
+ ROOT = Path(__file__).resolve().parent.parent
+ PROFILE = ROOT / ".orion_chrome_profile"
+@@ -77,6 +79,7 @@ class BrowserWorker:
+         self.running = False
+         self.context = None
+         self.safe_browser = None
++        self.submitted_at = {}
+ 
+     def start(self):
+         if self.thread and self.thread.is_alive():
+@@ -110,11 +113,13 @@ class BrowserWorker:
+         }
+         with self.lock:
+             self.tasks[task_id] = task
++            self.submitted_at[task_id] = time.perf_counter()
+         try:
+             self.task_queue.put_nowait(task_id)
+         except queue.Full:
+             with self.lock:
+                 del self.tasks[task_id]
++                self.submitted_at.pop(task_id, None)
+             raise RuntimeError("Task queue is full.")
+         return dict(task)
+ 
+@@ -147,7 +152,9 @@ class BrowserWorker:
+             pages = [p for p in self.context.pages if not p.is_closed()]
+             if not pages:
+                 return False
+-            pages[0].evaluate("1")
++            if not self.context.browser or not self.context.browser.is_connected():
++                return False
++            pages[0].evaluate('1')  # Detect a crashed renderer, not only a disconnected browser.
+             return True
+         except Exception:
+             return False
+@@ -179,7 +186,7 @@ class BrowserWorker:
+                     base.reset_elements()
+                 else:
+                     self._close_browser()
+-            if self._browser_alive():
++            if self.context is not None and self.safe_browser is not None:
+                 return self.safe_browser
+ 
+         self._close_browser()
+@@ -220,11 +227,20 @@ class BrowserWorker:
+         if task is None:
+             return
+         self.update_task(task_id, status="running")
++        started = time.perf_counter()
++        with self.lock:
++            submitted = self.submitted_at.pop(task_id, started)
++        timings = [{'stage': 'worker.queue', 'elapsed_ms': round((started - submitted) * 1000, 3)}]
+         try:
+-            browser = self._ensure_browser(playwright, UniversalBrowser, START_URL)
+-            result = run_agent(browser, task["instruction"])
++            with measure('browser.ensure', timings):
++                browser = self._ensure_browser(playwright, UniversalBrowser, START_URL)
++            with measure('agent.run', timings):
++                result = run_agent(browser, task["instruction"])
+             if not isinstance(result, dict):
+                 raise RuntimeError("Agent returned an invalid result.")
++            result['workflow_timings'] = timings
++            result['total_elapsed_ms'] = round((time.perf_counter() - submitted) * 1000, 3)
++            logger.info('[PERF] task.total %.3f ms', result['total_elapsed_ms'])
+             outcome = result.get("outcome")
+             status = (
+                 "finished" if outcome == "finished" else
+diff --git a/backend/performance.py b/backend/performance.py
+new file mode 100644
+index 0000000..12ae656
+--- /dev/null
++++ b/backend/performance.py
+@@ -0,0 +1,24 @@
++"""Monotonic stage timings; no prompts, page contents, or credentials in logs."""
++import logging
++import time
++from contextlib import contextmanager
++
++logger = logging.getLogger('orion.performance')
++if not logger.handlers:
++    handler = logging.StreamHandler()
++    handler.setFormatter(logging.Formatter('%(message)s'))
++    logger.addHandler(handler)
++logger.setLevel(logging.INFO)
++logger.propagate = False
++
++
++@contextmanager
++def measure(stage, timings=None):
++    started = time.perf_counter()
++    try:
++        yield
++    finally:
++        elapsed = round((time.perf_counter() - started) * 1000, 3)
++        logger.info('[PERF] %s %.3f ms', stage, elapsed)
++        if timings is not None:
++            timings.append({'stage': stage, 'elapsed_ms': elapsed})
+diff --git a/backend/universal_agent.py b/backend/universal_agent.py
+index 312552b..8c4a403 100644
+--- a/backend/universal_agent.py
++++ b/backend/universal_agent.py
+@@ -24,8 +24,10 @@ from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+ 
+ try:
+     from backend.fast_commands import search_command
++    from backend.performance import measure
+ except ModuleNotFoundError:
+     from fast_commands import search_command
++    from performance import measure
+ 
+ 
+ 
+@@ -203,48 +205,8 @@ def host_matches(host, domain):
+ # Observe the ordinary YouTube Skip Ad button. This code never
+ # changes player timers, requests, or YouTube's ad delivery.
+ # It clicks only a visible skip control provided by YouTube.
+-YOUTUBE_SKIP_SCRIPT = r"""
+-(() => {
+-  if (!/(^|\.)youtube\.com$/.test(location.hostname)) return;
+-  if (window.__orionSkipWatcher) return;
+-  window.__orionSkipWatcher = true;
+-
+-  const selectors = [
+-    '.ytp-ad-skip-button',
+-    '.ytp-ad-skip-button-modern',
+-    '.ytp-skip-ad-button',
+-    'button.ytp-ad-skip-button',
+-    '.ytp-ad-skip-button-container button'
+-  ];
+-  let lastClick = 0;
+-  const trySkip = () => {
+-    if (Date.now() - lastClick < 500) return;
+-    for (const selector of selectors) {
+-      const button = document.querySelector(selector);
+-      if (!button || button.disabled) continue;
+-      const style = getComputedStyle(button);
+-      const visible = button.getClientRects().length > 0 &&
+-        style.visibility !== 'hidden' && style.display !== 'none';
+-      if (visible) {
+-        lastClick = Date.now();
+-        button.click();
+-        break;
+-      }
+-    }
+-  };
+-  const start = () => {
+-    trySkip();
+-    new MutationObserver(trySkip).observe(document.documentElement, {
+-      childList: true, subtree: true, attributes: true,
+-      attributeFilter: ['class', 'style', 'disabled']
+-    });
+-    setInterval(trySkip, 250);
+-  };
+-  if (document.readyState === 'loading') {
+-    document.addEventListener('DOMContentLoaded', start, {once:true});
+-  } else { start(); }
+-})();
+-"""
++YOUTUBE_SKIP_SCRIPT = (Path(__file__).with_name('youtube_monitor.js')).read_text(encoding='utf-8')
++YOUTUBE_PLAYBACK_SCRIPT = (Path(__file__).with_name('youtube_playback.js')).read_text(encoding='utf-8')
+ 
+ 
+ class UniversalBrowser:
+@@ -458,24 +420,28 @@ class UniversalBrowser:
+         self.observed_page = page
+         return {'observation': f"URL: {page.url}\nTitle: {snapshot['title']}\n"
+                 f"Visible text:\n{snapshot['body']}\nInteractive elements:\n" + '\n'.join(lines),
+-                'media': self.media_state()}
++                'media': self.media_state(verify=False)}
+ 
+-    def media_state(self):
++    def media_state(self, verify=True):
+         page = self.page()
+         if not host_matches(get_host(page.url), 'youtube.com'):
+             return {'site': get_host(page.url)}
+-        return page.evaluate("""() => {
+-            const video = document.querySelector('video');
+-            const ad = !!document.querySelector('.html5-video-player.ad-showing');
+-            const skip = Array.from(document.querySelectorAll(
+-              '.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button'))
+-              .some(el => el.getClientRects().length && !el.disabled &&
+-                getComputedStyle(el).visibility !== 'hidden');
+-            return {site: 'youtube', video_present: !!video,
+-              playing: !!video && !video.paused && !video.ended,
+-              ad_playing: ad, skip_available: skip,
+-              auto_skip_enabled: !!window.__orionSkipWatcher};
+-        }""")
++        # General page observations report playback as unverified without waiting.
++        # Explicit media checks verify progress, not just !paused.
++        with measure('playback.verify' if verify else 'playback.snapshot'):
++            playback = page.evaluate(YOUTUBE_PLAYBACK_SCRIPT,
++                {'start': False, 'interval_ms': 350, 'verify': verify})
++        monitor = playback['skip_metrics']
++        return {'site': 'youtube', **playback, 'skip_available': monitor['skip_available'],
++                'auto_skip_enabled': monitor['enabled'], 'skip_metrics': monitor}
++
++    def stop_monitors(self):
++        for page in self.context.pages:
++            if not page.is_closed():
++                try:
++                    page.evaluate('() => window.__orionSkipWatcher?.stop?.()')
++                except Exception:
++                    pass
+ 
+     def quick_search(self, command):
+         """Navigate within one shared 4.5-second budget, without model calls."""
+@@ -1101,16 +1067,20 @@ class UniversalBrowser:
+             return {'error': 'YouTube is not approved.'}
+         self.youtube_results = []
+         self.reset_elements()
++        timings = []
+         deadline = time.monotonic() + 4.5
+         try:
+             page = self.page()
+-            response = page.goto(url, wait_until='commit', timeout=4500)
++            with measure('search.navigate', timings):
++                response = page.goto(url, wait_until='commit', timeout=4500)
+             if response and response.status >= 400:
+                 return {'error': f'YouTube returned HTTP {response.status}.'}
+-            page.locator('a#video-title[href*="/watch?"]').first.wait_for(
+-                state='attached', timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+-            raw = page.locator('a#video-title').evaluate_all("""links => links.slice(0, 40)
+-                .map(a => ({url: a.href, title: (a.title || a.innerText || '').trim()}))""")
++            with measure('search.results_ready', timings):
++                page.locator('a#video-title[href*="/watch?"]').first.wait_for(
++                    state='attached', timeout=max(1, int((deadline - time.monotonic()) * 1000)))
++            with measure('search.extract', timings):
++                raw = page.locator('a#video-title').evaluate_all("""links => links.slice(0, 40)
++                    .map(a => ({url: a.href, title: (a.title || a.innerText || '').trim()}))""")
+             seen = set()
+             for item in raw:
+                 parsed = urlparse(item['url'])
+@@ -1125,69 +1095,71 @@ class UniversalBrowser:
+                     break
+             if not self.youtube_results:
+                 return {'error': 'No video results are available yet.'}
+-            return {'query': query, 'results': self.youtube_results, 'url': page.url}
++            return {'query': query, 'results': self.youtube_results, 'url': page.url, 'timings': timings}
+         except Exception as exc:
+             return {'error': f'YouTube search unavailable: {exc}'}
+ 
+     def youtube_open_video(self, index):
+-        """Open one of the numbered results from youtube_search."""
++        """Opening a watch page is separate from verified playback."""
+         if not isinstance(index, int) or not 0 <= index < len(self.youtube_results):
+-            return {"error": "Invalid YouTube result index. Search again first."}
++            return {'error': 'Invalid YouTube result index. Search again first.'}
+         selected = self.youtube_results[index]
+-        url = selected["url"]
++        url = selected['url']
+         if not self.domain_allowed(url):
+-            return {"error": "YouTube video URL is not approved."}
++            return {'error': 'YouTube video URL is not approved.'}
++        page = self.page()
++        self.reset_elements()
++        timings = []
++        deadline = time.monotonic() + 8
+         try:
+-            page = self.page()
+-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+-            self.reset_elements()
+-            page.locator("video").first.wait_for(state="attached", timeout=12000)
+-            return {
+-                "opened": True,
+-                "selected_title": selected["title"],
+-                "page_title": page.title(),
+-                "url": page.url,
+-                "playback": self.youtube_play(),
+-                "ads": "Watching for YouTube's normal Skip Ad button when available."
+-            }
++            with measure('video.navigate', timings):
++                response = page.goto(url, wait_until='commit', timeout=8000)
++            if response and response.status >= 400:
++                return {'error': f'Video returned HTTP {response.status}.'}
++            if not self.domain_allowed(page.url):
++                return {'error': 'Video redirected outside approved websites.'}
++            with measure('video.attach', timings):
++                try:
++                    page.locator('video').first.wait_for(state='attached',
++                        timeout=max(1, int((deadline - time.monotonic()) * 1000)))
++                except BrowserTimeout:
++                    return {'opened': True, 'selected_title': selected['title'], 'url': page.url,
++                            'playback': {'playing': False, 'state': 'loading', 'video_present': False},
++                            'timings': timings}
++            with measure('video.playback_verify', timings):
++                playback = self.youtube_play()
++            return {'opened': True, 'selected_title': selected['title'],
++                    'page_title': page.title(), 'url': page.url,
++                    'playback': playback, 'timings': timings,
++                    'ads': 'Watching for YouTube Skip Ad controls when available.'}
+         except Exception as exc:
+-            return {"error": f"Could not open video: {exc}"}
++            return {'error': f'Could not open video: {exc}'}
+ 
+     def youtube_play(self):
+-        """Attempt playback, but never claim success without player state."""
+         try:
+             page = self.page()
+-            if get_host(page.url) not in ("youtube.com", "www.youtube.com"):
+-                return {"error": "Not on YouTube."}
+-            video = page.locator("video").first
+-            video.wait_for(state="attached", timeout=8000)
+-            result = video.evaluate('''async (v) => {
+-                try { await v.play(); }
+-                catch (e) { return {playing: !v.paused, reason: String(e)}; }
+-                return {playing: !v.paused, paused: v.paused};
+-            }''')
+-            return result
++            if not host_matches(get_host(page.url), 'youtube.com'):
++                return {'error': 'Not on YouTube.'}
++            with measure('playback.start_verify'):
++                return page.evaluate(YOUTUBE_PLAYBACK_SCRIPT, {'start': True, 'interval_ms': 350})
+         except Exception as exc:
+-            return {"playing": False, "reason": str(exc)}
++            return {'playing': False, 'state': 'error', 'reason': str(exc)}
+ 
+     def youtube_skip_ad(self):
+-        """Click YouTube's own Skip Ad button when visible."""
+         try:
+             page = self.page()
+-            if get_host(page.url) not in ("youtube.com", "www.youtube.com"):
+-                return {"error": "Not on YouTube."}
+-            selectors = (
+-                ".ytp-ad-skip-button, .ytp-ad-skip-button-modern, "
+-                ".ytp-skip-ad-button, button.ytp-ad-skip-button, "
+-                ".ytp-ad-skip-button-container button"
+-            )
+-            for button in page.locator(selectors).all():
+-                if button.is_visible() and button.is_enabled():
+-                    button.click(timeout=1500)
+-                    return {"skipped": True, "message": "Clicked YouTube Skip Ad."}
+-            return {"skipped": False, "message": "No available Skip Ad button."}
++            if not host_matches(get_host(page.url), 'youtube.com'):
++                return {'error': 'Not on YouTube.'}
++            with measure('skip.manual'):
++                result = page.evaluate("""() => {
++                    const monitor = window.__orionSkipWatcher;
++                    const skipped = !!monitor?.skip?.();
++                    return {skipped, metrics: monitor?.snapshot?.() || null};
++                }""")
++            return {**result, 'message': 'Dispatched YouTube Skip Ad click.' if result['skipped']
++                    else 'No available Skip Ad button, or a click is awaiting confirmation.'}
+         except Exception as exc:
+-            return {"skipped": False, "reason": str(exc)}
++            return {'skipped': False, 'reason': str(exc)}
+ 
+     # EXECUTION DISPATCH
+ 
+@@ -1308,7 +1280,7 @@ TOOLS = [
+     ),
+     tool(
+         "youtube_play",
+-        "Attempt to start playback of the current YouTube video.",
++        "Attempt playback and verify currentTime advances; reports loading, buffering, paused, ad, or error.",
+     ),
+     tool(
+         "youtube_skip_ad",
+@@ -1491,6 +1463,9 @@ Rules:
+ 14. For YouTube video requests, prefer youtube_search and youtube_open_video.
+     Use media_state to inspect playback and ad availability without a full observation.
+     Automatic ad skipping continues while you are idle; do not repeatedly poll with tools.
++    A watch URL or paused=false is not proof of playback. Report playback.playing only
++    when progress_verified is true; distinguish advertisement from the requested video.
++    If buffering/loading, do not repeatedly click or call youtube_play. Report that state.
+     Inspect search result titles, do not assert an upload is official without evidence.
+     The YouTube skip watcher only clicks visible, ordinary Skip Ad buttons.
+     Never claim an unskippable ad was skipped.
+@@ -1541,15 +1516,12 @@ def generate(contents, config):
+ 
+ 
+ 
+-                return client.models.generate_content(
+-
+-                    model=model,
+-
+-                    contents=contents,
+-
+-                    config=config,
+-
+-                )
++                with measure('gemini.request'):
++                    return client.models.generate_content(
++                        model=model,
++                        contents=contents,
++                        config=config,
++                    )
+ 
+ 
+ 
+@@ -1659,6 +1631,7 @@ def run_agent(browser, instruction):
+ 
+     started_at = time.monotonic()
+     actions_taken = 0
++    timings = []
+ 
+     tool_errors = []
+ 
+@@ -1674,7 +1647,8 @@ def run_agent(browser, instruction):
+ 
+         try:
+ 
+-            tabs = browser.list_tabs()
++            with measure('task.tabs', timings):
++                tabs = browser.list_tabs()
+ 
+         except Exception:
+ 
+@@ -1690,6 +1664,7 @@ def run_agent(browser, instruction):
+ 
+             "tabs": tabs,
+ 
++            "timings": timings,
+             "elapsed_ms": round((time.monotonic() - started_at) * 1000),
+             "actions_taken": actions_taken,
+ 
+@@ -1703,7 +1678,8 @@ def run_agent(browser, instruction):
+ 
+         command = search_command(instruction, browser.page().url)
+         if command:
+-            result = browser.quick_search(command)
++            with measure('search.direct', timings):
++                result = browser.quick_search(command)
+             actions_taken = 1
+             if 'error' in result:
+                 tool_errors.append({'tool': 'quick_search', 'message': result['error']})
+@@ -1713,7 +1689,8 @@ def run_agent(browser, instruction):
+                 message += '\n' + '\n'.join(
+                     f"{item['index'] + 1}. {item['title']}" for item in result['results'][:5])
+             return finish('finished', message)
+-        initial_state = browser.observe_page()
++        with measure('page.initial_observation', timings):
++            initial_state = browser.observe_page()
+ 
+ 
+ 
+@@ -1781,13 +1758,8 @@ def run_agent(browser, instruction):
+ 
+         while actions_taken < MAX_STEPS:
+ 
+-            response = generate(
+-
+-                contents=conversation,
+-
+-                config=config,
+-
+-            )
++            with measure('gemini.turn', timings):
++                response = generate(contents=conversation, config=config)
+ 
+ 
+ 
+@@ -1899,13 +1871,8 @@ def run_agent(browser, instruction):
+ 
+ 
+ 
+-                    result = browser.execute(
+-
+-                        name,
+-
+-                        args,
+-
+-                    )
++                    with measure(f'tool.{name}', timings):
++                        result = browser.execute(name, args)
+ 
+ 
+ 
+diff --git a/backend/youtube_monitor.js b/backend/youtube_monitor.js
+new file mode 100644
+index 0000000..b36ea3b
+--- /dev/null
++++ b/backend/youtube_monitor.js
+@@ -0,0 +1,167 @@
++/* One page-local monitor. Only YouTube's visible, enabled Skip Ad controls. */
++(function install() {
++  if (!/(^|\.)youtube\.com$/.test(location.hostname)) return;
++  const previous = window.__orionSkipWatcher;
++  if (previous?.version === 2 && !previous.stopped) return;
++  previous?.stop?.();
++
++  const selector = '.ytp-ad-skip-button,.ytp-ad-skip-button-modern,' +
++    '.ytp-skip-ad-button,.ytp-ad-skip-button-container button';
++  const candidates = new Set();
++  const states = new WeakMap();
++  const pending = new Set();
++  const samples = [];
++  const counters = {scans: 0, checks: 0, mutations: 0, clicks: 0};
++  let observer, timer, stopped = false, lastScan = -Infinity;
++  const now = () => performance.now();
++  const adPlaying = () => !!document.querySelector('.html5-video-player.ad-showing');
++  const eligible = button => {
++    if (!button.isConnected || button.disabled || button.matches(':disabled') ||
++        button.closest('[aria-disabled="true"],[inert]')) return false;
++    const style = getComputedStyle(button);
++    if (!button.getClientRects().length || style.visibility !== 'visible' ||
++        style.display === 'none' || style.pointerEvents === 'none') return false;
++    for (let node = button; node; node = node.parentElement) {
++      if (Number(getComputedStyle(node).opacity) === 0) return false;
++    }
++    return true;
++  };
++  const add = root => {
++    if (!(root instanceof Element)) return;
++    if (root.matches(selector)) candidates.add(root);
++    if (root.childElementCount) {
++      for (const button of root.querySelectorAll(selector)) candidates.add(button);
++    }
++  };
++  const scan = () => {
++    counters.scans++;
++    lastScan = now();
++    for (const button of document.querySelectorAll(selector)) candidates.add(button);
++  };
++  const confirm = () => {
++    for (const sample of pending) {
++      const button = sample.button;
++      const result = !button.isConnected ? 'control_removed' :
++        !eligible(button) ? 'control_unavailable' :
++        sample.ad_before && !adPlaying() ? 'ad_ended' : null;
++      if (result || now() - sample.clicked_at_ms >= 1000) {
++        sample.confirmed = !!result;
++        sample.confirmation = result || 'not_confirmed';
++        sample.confirmation_ms = now() - sample.clicked_at_ms;
++        delete sample.button;
++        pending.delete(sample);
++        console.debug('[ORION][skip]', JSON.stringify(sample));
++      }
++    }
++  };
++  const check = (source = 'mutation') => {
++    if (stopped) return null;
++    confirm();
++    let dispatched = null;
++    for (const button of candidates) {
++      if (!button.isConnected || !button.matches(selector)) {
++        candidates.delete(button);
++        states.delete(button);
++        continue;
++      }
++      const started = now();
++      counters.checks++;
++      let state = states.get(button);
++      if (!state) {
++        state = {first_seen_ms: started, last_click_ms: -Infinity, attempts: 0};
++        states.set(button, state);
++      }
++      if (!eligible(button)) {
++        state.attempts = 0;
++        state.last_click_ms = -Infinity;
++        continue;
++      }
++      // Per-control backoff prevents spam without delaying a different ad's control.
++      if (started - state.last_click_ms < 1000 || state.attempts >= 3) continue;
++      const detected = now();
++      const sample = {source, first_seen_ms: state.first_seen_ms,
++        eligible_observed_at_ms: detected, detection_ms: detected - started,
++        eligibility_wait_ms: detected - state.first_seen_ms,
++        ad_before: adPlaying(), confirmed: false};
++      state.last_click_ms = now();
++      state.attempts++;
++      sample.clicked_at_ms = now();
++      sample.dispatch_ms = sample.clicked_at_ms - detected;
++      // No seeking, timer changes, request interception, or player API bypass.
++      button.click();
++      sample.click_handler_ms = now() - sample.clicked_at_ms;
++      counters.clicks++;
++      sample.button = button;
++      samples.push(sample);
++      if (samples.length > 100) samples.shift();
++      pending.add(sample);
++      dispatched = sample;
++      break;
++    }
++    confirm();
++    return dispatched;
++  };
++  const navigation = () => { scan(); check('navigation'); };
++  const stop = () => {
++    stopped = true;
++    observer?.disconnect();
++    clearInterval(timer);
++    document.removeEventListener('yt-navigate-finish', navigation);
++    document.removeEventListener('DOMContentLoaded', start);
++    window.removeEventListener('pagehide', suspend);
++    candidates.clear();
++    for (const sample of pending) delete sample.button;
++    pending.clear();
++  };
++  const suspend = () => {
++    stop();
++    window.addEventListener('pageshow', event => {
++      if (event.persisted) install();
++    }, {once: true});
++  };
++  const monitor = {
++    version: 2, get stopped() { return stopped; }, stop,
++    skip: () => { scan(); return !!check('manual'); },
++    snapshot: () => ({enabled: !stopped, counters: {...counters},
++      skip_available: !stopped && Array.from(candidates).some(eligible),
++      samples: samples.map(({button, ...sample}) => ({...sample}))})
++  };
++  window.__orionSkipWatcher = monitor;
++  const start = () => {
++    if (stopped || observer) return;
++    observer = new MutationObserver(records => {
++      counters.mutations += records.length;
++      let relevant = false;
++      for (const record of records) {
++        if (record.type === 'childList') {
++          for (const node of record.addedNodes) {
++            const count = candidates.size;
++            add(node);
++            if (candidates.size !== count) relevant = true;
++          }
++          if (record.removedNodes.length && (pending.size || candidates.size)) relevant = true;
++        } else if (record.target instanceof Element) {
++          const target = record.target;
++          if (target.matches(selector)) { candidates.add(target); relevant = true; }
++          for (const button of candidates) {
++            if (target === button || target.contains(button)) { relevant = true; break; }
++          }
++        }
++      }
++      if (relevant) check('mutation');
++    });
++    observer.observe(document.documentElement, {childList: true, subtree: true,
++      attributes: true, attributeFilter: ['class', 'style', 'disabled', 'aria-disabled', 'hidden', 'inert']});
++    scan();
++    check('initial');
++    // CSS animations and stylesheets can change visibility without a DOM mutation.
++    timer = setInterval(() => {
++      if (now() - lastScan >= 1000) scan();
++      check('fallback');
++    }, 100);
++    document.addEventListener('yt-navigate-finish', navigation);
++    window.addEventListener('pagehide', suspend);
++  };
++  if (document.documentElement) start();
++  else document.addEventListener('DOMContentLoaded', start, {once: true});
++})();
+diff --git a/backend/youtube_playback.js b/backend/youtube_playback.js
+new file mode 100644
+index 0000000..4b44a35
+--- /dev/null
++++ b/backend/youtube_playback.js
+@@ -0,0 +1,55 @@
++/* Runs through page.evaluate with {start, interval_ms}; all waits stay in-page. */
++async ({start = false, interval_ms = 350, verify = true} = {}) => {
++  const began = performance.now();
++  const video = document.querySelector('video');
++  const adPlaying = () => !!document.querySelector('.html5-video-player.ad-showing');
++  const skipMetrics = () => window.__orionSkipWatcher?.snapshot?.() ||
++    {enabled: false, skip_available: false, samples: []};
++  if (!video) return {playing: false, state: 'opened', video_present: false,
++    ad_playing: adPlaying(), verification_ms: performance.now() - began, skip_metrics: skipMetrics()};
++  let reason = null;
++  // Never toggle the player. A pending play promise must not block task completion.
++  let playTimeout;
++  if (start && video.paused && !video.ended && !video.error) {
++    try {
++      await Promise.race([
++        video.play(),
++        new Promise((_, reject) => {
++          playTimeout = setTimeout(() => reject(new Error('Playback request is still pending')), 500);
++        })
++      ]);
++    } catch (error) { reason = String(error); }
++    finally { clearTimeout(playTimeout); }
++  }
++  const position = video.currentTime;
++  const source = video.currentSrc;
++  const adBefore = adPlaying();
++  const sampledAt = performance.now();
++  // A short bounded observation checks progress; paused/error/loading states return immediately.
++  if (verify && !video.paused && !video.ended && !video.error && video.readyState >= 2) {
++    await new Promise(resolve => setTimeout(resolve, Math.max(200, Math.min(1000, interval_ms))));
++  }
++  const advance = video.currentTime - position;
++  const sameVideo = video.isConnected && video === document.querySelector('video') &&
++    video.currentSrc === source && adBefore === adPlaying();
++  const advancing = verify && sameVideo && !video.seeking && advance > 0.02;
++  let playback;
++  if (video.error) playback = 'error';
++  else if (video.ended) playback = 'ended';
++  else if (video.readyState < 2) playback = 'loading';
++  else if (video.paused) playback = 'paused';
++  else if (!verify) playback = 'unverified';
++  else if (advancing) playback = 'playing';
++  else playback = 'buffering';
++  const ad = adPlaying();
++  return {video_present: true, playing: playback === 'playing',
++    state: ad && playback !== 'error' ? 'advertisement' : playback,
++    playback_state: playback, ad_playing: ad, paused: video.paused,
++    ready_state: video.readyState, current_time: video.currentTime,
++    advanced_seconds: advance, progress_verified: advancing,
++    observation_ms: performance.now() - sampledAt,
++    verification_ms: performance.now() - began,
++    skip_metrics: skipMetrics(),
++    ...(video.error ? {error: {code: video.error.code, message: video.error.message}} : {}),
++    reason};
++}
+diff --git a/docs/latency-benchmark.json b/docs/latency-benchmark.json
+new file mode 100644
+index 0000000..eae12a9
+--- /dev/null
++++ b/docs/latency-benchmark.json
+@@ -0,0 +1,202 @@
++{
++  "environment": {
++    "chrome": "154.0.8037.98",
++    "mode": "headless",
++    "network": "local route.fulfill fixtures, no live YouTube or Gemini",
++    "clock": "performance.now in-page; perf_counter in Python",
++    "runs": 30,
++    "skip_scenario": "rapid successive inserted/enabled controls"
++  },
++  "before": {
++    "skip_eligible_to_click": {
++      "n": 30,
++      "p50_ms": 721.9,
++      "p95_ms": 729.2,
++      "max_ms": 742
++    },
++    "fixture_click_to_control_removed": {
++      "n": 30,
++      "p50_ms": 5.5,
++      "p95_ms": 6.6,
++      "max_ms": 6.7
++    },
++    "fixture_eligibility_wait": {
++      "n": 30,
++      "p50_ms": 13.4,
++      "p95_ms": 15.2,
++      "max_ms": 16.1
++    },
++    "skip_css_fallback": {
++      "n": 30,
++      "p50_ms": 222.4,
++      "p95_ms": 229.9,
++      "max_ms": 231.6
++    },
++    "youtube_search": {
++      "n": 30,
++      "p50_ms": 107.881,
++      "p95_ms": 138.131,
++      "max_ms": 138.783
++    },
++    "video_open_and_play": {
++      "n": 30,
++      "p50_ms": 237.825,
++      "p95_ms": 474.573,
++      "max_ms": 491.384
++    },
++    "playback_verify": {
++      "n": 30,
++      "p50_ms": 72.043,
++      "p95_ms": 86.341,
++      "max_ms": 146.395
++    },
++    "page_observation": {
++      "n": 30,
++      "p50_ms": 2.574,
++      "p95_ms": 3.91,
++      "max_ms": 6.446
++    }
++  },
++  "after": {
++    "skip_eligible_to_click": {
++      "n": 30,
++      "p50_ms": 0.1,
++      "p95_ms": 1.2,
++      "max_ms": 1.7
++    },
++    "fixture_click_to_control_removed": {
++      "n": 30,
++      "p50_ms": 5.8,
++      "p95_ms": 6.7,
++      "max_ms": 6.9
++    },
++    "fixture_eligibility_wait": {
++      "n": 30,
++      "p50_ms": 12.5,
++      "p95_ms": 15.2,
++      "max_ms": 15.8
++    },
++    "skip_detection": {
++      "n": 30,
++      "p50_ms": 0.1,
++      "p95_ms": 1.0,
++      "max_ms": 1.7
++    },
++    "skip_detection_to_dispatch": {
++      "n": 30,
++      "p50_ms": 0.0,
++      "p95_ms": 0.1,
++      "max_ms": 0.1
++    },
++    "skip_dispatch_to_confirm": {
++      "n": 30,
++      "p50_ms": 5.8,
++      "p95_ms": 6.8,
++      "max_ms": 7
++    },
++    "monitor_counters": {
++      "scans": 1,
++      "checks": 50,
++      "mutations": 135,
++      "clicks": 30
++    },
++    "skip_css_fallback": {
++      "n": 30,
++      "p50_ms": 73.3,
++      "p95_ms": 81.8,
++      "max_ms": 82.2
++    },
++    "youtube_search": {
++      "n": 30,
++      "p50_ms": 111.766,
++      "p95_ms": 119.434,
++      "max_ms": 120.097
++    },
++    "youtube_search_stages": {
++      "search.navigate": {
++        "n": 30,
++        "p50_ms": 42.645,
++        "p95_ms": 51.109,
++        "max_ms": 57.504
++      },
++      "search.results_ready": {
++        "n": 30,
++        "p50_ms": 52.104,
++        "p95_ms": 57.451,
++        "max_ms": 58.624
++      },
++      "search.extract": {
++        "n": 30,
++        "p50_ms": 15.112,
++        "p95_ms": 17.343,
++        "max_ms": 17.534
++      }
++    },
++    "video_open_and_play": {
++      "n": 30,
++      "p50_ms": 483.728,
++      "p95_ms": 511.374,
++      "max_ms": 512.813
++    },
++    "video_open_and_play_stages": {
++      "video.navigate": {
++        "n": 30,
++        "p50_ms": 38.547,
++        "p95_ms": 58.857,
++        "max_ms": 61.281
++      },
++      "video.attach": {
++        "n": 30,
++        "p50_ms": 74.88,
++        "p95_ms": 80.483,
++        "max_ms": 89.864
++      },
++      "video.playback_verify": {
++        "n": 30,
++        "p50_ms": 370.707,
++        "p95_ms": 379.024,
++        "max_ms": 382.668
++      }
++    },
++    "playback_verify": {
++      "n": 30,
++      "p50_ms": 356.983,
++      "p95_ms": 368.436,
++      "max_ms": 368.518
++    },
++    "page_observation": {
++      "n": 30,
++      "p50_ms": 2.739,
++      "p95_ms": 3.688,
++      "max_ms": 3.911
++    }
++  },
++  "recovery_before": {
++    "cold_or_recovery": {
++      "n": 3,
++      "p50_ms": 665.126,
++      "p95_ms": 709.889,
++      "max_ms": 709.889
++    },
++    "warm_reuse": {
++      "n": 3,
++      "p50_ms": 6.232,
++      "p95_ms": 7.075,
++      "max_ms": 7.075
++    }
++  },
++  "recovery_after": {
++    "cold_or_recovery": {
++      "n": 3,
++      "p50_ms": 703.163,
++      "p95_ms": 723.615,
++      "max_ms": 723.615
++    },
++    "warm_reuse": {
++      "n": 3,
++      "p50_ms": 3.535,
++      "p95_ms": 3.823,
++      "max_ms": 3.823
++    }
++  }
++}
+diff --git a/docs/latency-optimization.md b/docs/latency-optimization.md
+new file mode 100644
+index 0000000..78715b7
+--- /dev/null
++++ b/docs/latency-optimization.md
+@@ -0,0 +1,177 @@
++# ORION latency audit
++
++## Execution path and causes
++
++The desktop posts a command to FastAPI, which queues it in `BrowserWorker`.
++One owning thread launches or reuses Chrome and calls `run_agent`. Simple
++explicit searches retain their existing deterministic route. Other instructions
++go through an initial page observation, Gemini manual function calls, browser
++tools, and a final Gemini response. The desktop polls every 250 ms.
++
++The YouTube monitor is an init script on new documents and is explicitly
++installed on restored pages. Its JavaScript runs in the browser process without
++a Gemini call, Python task, network request, or extension service worker per ad.
++The extension remains a future browser bridge, rather than the active skipper.
++[Playwright evaluation documentation](https://playwright.dev/python/docs/evaluating)
++describes the separate browser execution context used here.
++
++The previous monitor used a document-wide mutation observer, repeated selector
++queries, a 250 ms interval, and one global 500 ms cooldown. A mutation arriving
++during the cooldown could be discarded; timer boundaries could then extend the
++delay past 500 ms. Its first-match queries also missed available controls when
++a hidden duplicate appeared first. It did not respect `aria-disabled`, keep
++confirmation records, or provide explicit cleanup. The supplied local benchmark
++exercises the cooldown with rapid successive controls and exercises CSS-only
++visibility separately. It does **not** reproduce a five-second live delay.
++
++Separately, video opening allowed serial waits of 30 seconds for navigation,
++12 seconds for attachment, and 8 seconds for a video locator. The subsequent
++`play()` promise had no local bound. Playback success meant only `!paused`,
++which can also describe a stalled or buffering video.
++
++Remaining general-tool waits include 25-second navigation limits, 8-second
++element actions, 5-second DOM readiness checks, and a 400 ms scroll settle.
++Gemini requests and transient-error retries can dominate multi-step tasks;
++retry sleeps are 1.5ΓÇô2.5 seconds on the first retry. These are outside ad
++skipping and have not been removed indiscriminately or benchmarked against live
++Gemini. Chrome startup still opens the existing approved start page, preserving
++session and contextual-search behavior. Sequential model-dependent actions
++cannot safely overlap. No concurrent Playwright calls were introduced.
++
++## Changes and measurement definitions
++
++- One idempotent monitor per document caches candidates and reacts to relevant
++  DOM mutations. It checks all matching controls, including `aria-disabled`,
++  disabled fieldsets, hidden/inert controls, opacity, and pointer eligibility.
++  It uses a 100 ms fallback for CSS changes without an observed DOM mutation,
++  and a full selector refresh at most once a second during fallback operation.
++- Per-control retries replace the global cooldown. An unconfirmed unchanged
++  control has a one-second retry interval and a maximum of three attempts until
++  it becomes unavailable. A different eligible control can be clicked immediately.
++- SPA navigation refreshes candidates; full navigation installs a new document
++  monitor. `stop()`, pagehide, and document destruction clean up observers,
++  timers, listeners, and candidate references. A restored back/forward-cache
++  document reinstalls one monitor. Samples are bounded to the latest 100 clicks.
++- `performance.now()` records first observation, time waiting for observed
++  eligibility, eligibility-check cost, click dispatch, synchronous click-handler
++  cost, and confirmation. Confirmation distinguishes removed/unavailable control
++  from an ended ad. Dispatch alone is not proof that an advertisement ended.
++- True eligibility-change time is known only in the fixture, where its producer
++  timestamps the change. Live `eligible_observed_at_ms` records when ORION saw
++  eligibility; it cannot measure browser scheduling delay before observation.
++- Playback checks use the HTMLVideoElement API and a 350 ms observation of
++  `currentTime`. They distinguish opened, loading, paused, buffering, playing,
++  ended, error, and advertisement states. Source/video/ad replacement or seeking
++  invalidates progress evidence. Playback requests have a 500 ms promise bound;
++  a buffering, already unpaused player is never toggled or clicked again.
++- A general page observation reports playback as `unverified` without a fixed
++  wait. Explicit `media_state` and `youtube_play` checks verify progress. Only
++  verified progress reports `playing: true`; an ad is separately identified.
++- YouTube video navigation and attachment now share an eight-second budget.
++  A watch page whose video has not attached reports opened/loading, not playing.
++- Monotonic Python stage timings cover API submission, queueing, browser ensure,
++  agent execution, Gemini requests/turns, searches, video readiness, playback,
++  tools, and final tabs. Additive `timings`, `workflow_timings`, and
++  `total_elapsed_ms` fields preserve existing task fields. Desktop console timing
++  covers submission through observed completion, including polling delivery.
++- Browser reuse removes one redundant renderer probe but retains the initial
++  probe, browser connectivity check, closed-tab reselection, and recovery.
++
++## Benchmarks
++
++Results are generated by `tests/benchmark_latency.py` with a frozen copy of the
++pre-change methods and monitor in `tests/fixtures/latency_baseline.py`. Both
++implementations use the same local HTML fixture and native muted audio playback
++through an HTMLVideoElement. The native progress check uses
++[HTMLMediaElement.currentTime](https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/currentTime). All browser requests are intercepted by the test
++fixture; no live YouTube, Google, Gemini, passwords, tokens, or cookies are used.
++The fixture intentionally represents only a small player page, not YouTube's
++actual network, DOM workload, ad delivery, or video selection quality.
++
++**30 runs per operation; values are p50 / p95 / maximum in milliseconds.**
++
++| Operation | Before | After |
++| --- | ---: | ---: |
++| Skip: enabled/inserted control | 721.900 / 729.200 / 742.000 | 0.100 / 1.200 / 1.700 |
++| Skip: CSS-only visibility | 222.400 / 229.900 / 231.600 | 73.300 / 81.800 / 82.200 |
++| YouTube search completion | 107.881 / 138.131 / 138.783 | 111.766 / 119.434 / 120.097 |
++| Video open plus playback check | 237.825 / 474.573 / 491.384 | 483.728 / 511.374 / 512.813 |
++| Explicit playback check | 72.043 / 86.341 / 146.395 | 356.983 / 368.436 / 368.518 |
++| General page observation | 2.574 / 3.910 / 6.446 | 2.739 / 3.688 / 3.911 |
++| Warm browser reuse (3 runs) | 6.232 / 7.075 / 7.075 | 3.535 / 3.823 / 3.823 |
++| Cold launch/recovery (3 runs) | 665.126 / 709.889 / 709.889 | 703.163 / 723.615 / 723.615 |
++
++**Additional after-only phase measurements, 30 runs each:**
++
++| Phase | p50 / p95 / maximum (ms) |
++| --- | ---: |
++| Eligibility change to observed eligibility | 0.100 / 1.000 / 1.700 |
++| Observed eligibility to click dispatch | 0.000 / 0.100 / 0.100 |
++| Click dispatch to monitor confirmation | 5.800 / 6.800 / 7.000 |
++| search.navigate | 42.645 / 51.109 / 57.504 |
++| search.results_ready | 52.104 / 57.451 / 58.624 |
++| search.extract | 15.112 / 17.343 / 17.534 |
++| video.navigate | 38.547 / 58.857 / 61.281 |
++| video.attach | 74.880 / 80.483 / 89.864 |
++| video.playback_verify | 370.707 / 379.024 / 382.668 |
++
++The after monitor dispatched exactly 30 clicks for the 30 rapid-control trials;
++its counters recorded one full scan, 50 cached eligibility checks, and 135
++mutation records during that scenario. These counts exclude the separate CSS
++trials and subsequent navigation benchmarks.
++
++
++Raw values, Chrome version, and sample counts are in
++[latency-benchmark.json](latency-benchmark.json). p95 uses nearest rank; for the
++three recovery runs, p95 equals the maximum. Headless fixture results do not
++establish a live or background-tab SLA. Browser timer throttling, main-thread
++work, changed YouTube selectors, and network/model latency remain risks.
++
++Playback opening/checks intentionally spend time verifying progress that the
++previous implementation never verified. These measurements are a correctness
++tradeoff, not an equivalent-operation speedup. No end-to-end Gemini speedup or
++guaranteed five-second search response is claimed.
++
++## Validation and reproduction
++
++```powershell
++.venv/Scripts/python.exe -m unittest discover -s tests -v
++.venv/Scripts/python.exe tests/benchmark_latency.py --runs 30
++cd frontend
++npm.cmd run build
++node node_modules/eslint/bin/eslint.js src/App.tsx
++```
++
++The tests cover API authentication/submission/polling, additive workflow timing,
++manual Gemini function-call round trips, search routes, enabled/hidden/disabled
++controls, CSS fallback, click confirmation timeout, repeated SPA/full navigation,
++stop/pagehide/back-forward-cache lifecycle, real media progress, stalled/paused/
++loading/error/ad playback, domain rejection, and real headless Chrome recovery.
++Recovery and closed-tab reselection run on the owning thread. All 22 tests pass. The final frontend
++build and changed-file ESLint check pass. Native Tauri packaging and live YouTube
++have not been exercised. The installed Starlette TestClient emits an httpx
++deprecation warning; no dependency changes are required for these tests to pass.
++
++Restart the backend to install the new scripts on the current session. The JS
++assets must remain alongside `universal_agent.py` when distributing the Python
++backend. The existing Tauri shell and MV3 manifest/service worker are unchanged.
++
++## Changed files
++
++| File | Purpose |
++| --- | --- |
++| `backend/youtube_monitor.js` | Candidate-based skip detection, lifecycle, bounded metrics and confirmation |
++| `backend/youtube_playback.js` | Bounded native playback request and progress verification |
++| `backend/universal_agent.py` | Script integration, shared YouTube wait budgets, playback states and stage timing |
++| `backend/performance.py` | Monotonic stage timing and performance-only logs |
++| `backend/browser_worker.py` | Queue/startup/total timing and one fewer warm-session renderer probe |
++| `backend/api.py` | Submission timing with the existing endpoints/authentication |
++| `frontend/src/App.tsx` | Overall server execution time and observed command-to-result timing |
++| `tests/test_youtube_monitor.py` | Browser, watcher, playback, safety and recovery regressions |
++| `tests/test_api_workflow.py` | API/task compatibility and manual function calling |
++| `tests/fixtures/player.py` | Repeatable local ad DOM and native playback fixture |
++| `tests/fixtures/latency_baseline.py` | Frozen pre-change methods for comparison only |
++| `tests/benchmark_latency.py` | Before/after distributions and recovery benchmark |
++| `docs/latency-benchmark.json` | Measured results |
++| `docs/latency-optimization.md` | Audit, definitions, results and limitations |
++| `README.md` | Telemetry semantics and audit/reproduction link |
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index 742e036..d9b8f80 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -26,6 +26,7 @@ type TaskStatus =
+ 
+ type TaskResult = {
+   elapsed_ms?: number;
++  total_elapsed_ms?: number;
+   outcome?: string;
+   message?: string;
+   actions_taken?: number;
+@@ -190,6 +191,7 @@ function App() {
+     addMessage("user", instruction);
+ 
+     try {
++      const submittedAt = performance.now();
+       const created = (await request("/api/tasks", {
+         method: "POST",
+         headers: {
+@@ -231,6 +233,7 @@ function App() {
+           "Mission is still running. The dashboard stopped waiting, but the browser worker may continue executing it."
+         );
+       } else {
++        console.debug('[PERF] command_to_result_ms', performance.now() - submittedAt);
+         addMessage(
+           "assistant",
+           finalTask.result?.message ||
+@@ -523,8 +526,8 @@ function App() {
+           <div className="metric-row">
+             <span>Execution time</span>
+             <strong>
+-              {task?.result?.elapsed_ms != null
+-                ? `${(task.result.elapsed_ms / 1000).toFixed(1)}s`
++              {(task?.result?.total_elapsed_ms ?? task?.result?.elapsed_ms) != null
++                ? `${((task?.result?.total_elapsed_ms ?? task?.result?.elapsed_ms ?? 0) / 1000).toFixed(1)}s`
+                 : "ΓÇö"}
+             </strong>
+           </div>
+diff --git a/tests/benchmark_latency.py b/tests/benchmark_latency.py
+new file mode 100644
+index 0000000..f751ca9
+--- /dev/null
++++ b/tests/benchmark_latency.py
+@@ -0,0 +1,151 @@
++"""Repeatable before/after benchmark. All network responses are local fixtures.
++
++Run from root: .venv/Scripts/python.exe tests/benchmark_latency.py --runs 30
++"""
++import argparse
++import json
++import logging
++import math
++import statistics
++import sys
++import tempfile
++import time
++from pathlib import Path
++from unittest.mock import Mock, patch
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++from playwright.sync_api import sync_playwright
++
++from backend.browser_worker import BrowserWorker
++from backend.universal_agent import UniversalBrowser
++from fixtures.latency_baseline import BaselineBrowser, BaselineWorker
++from fixtures.player import fulfill_player
++
++
++def distribution(values):
++    values = sorted(values)
++    return {'n': len(values), 'p50_ms': round(statistics.median(values), 3),
++            'p95_ms': round(values[math.ceil(len(values) * .95) - 1], 3),
++            'max_ms': round(max(values), 3)}
++
++
++def fixture_browser(base):
++    class FixtureBrowser(base):
++        def __init__(self, context):
++            super().__init__(context)
++            context.route('**/*', fulfill_player)
++    return FixtureBrowser
++
++
++def benchmark(playwright, chrome, base, runs):
++    context = chrome.new_context()
++    browser = fixture_browser(base)(context)
++    page = context.new_page()
++    browser.active_page = page
++    page.goto('https://www.youtube.com/watch?v=abcdefghijk')
++    results = {}
++    try:
++        # Rapid successive controls stress the original global cooldown.
++        skips = [page.evaluate('opts => window.runSkipTrial(opts)',
++                 {'mode': 'enable' if i % 2 else 'insert', 'delay': 10 + i % 5})
++                 for i in range(runs)]
++        assert not any(sample['early'] for sample in skips)
++        results['skip_eligible_to_click'] = distribution([s['eligible_to_click_ms'] for s in skips])
++        results['fixture_click_to_control_removed'] = distribution([s['confirmation_ms'] for s in skips])
++        results['fixture_eligibility_wait'] = distribution([s['eligibility_wait_ms'] for s in skips])
++        if base is UniversalBrowser:
++            page.wait_for_function('() => window.__orionSkipWatcher.snapshot().samples.every(s => s.confirmation)')
++            monitor = page.evaluate('() => window.__orionSkipWatcher.snapshot()')
++            samples = monitor['samples']
++            results['skip_detection'] = distribution([
++                s['eligible_observed_at_ms'] - fixture['ready_at_ms'] for s, fixture in zip(samples, skips)])
++            results['skip_detection_to_dispatch'] = distribution([s['dispatch_ms'] for s in samples])
++            results['skip_dispatch_to_confirm'] = distribution([s['confirmation_ms'] for s in samples])
++            results['monitor_counters'] = monitor['counters']
++        css = []
++        for _ in range(runs):
++            page.goto('https://www.youtube.com/watch?v=abcdefghijk')
++            sample = page.evaluate('opts => window.runSkipTrial(opts)', {'mode': 'stylesheet'})
++            assert not sample['early']
++            css.append(sample['eligible_to_click_ms'])
++        results['skip_css_fallback'] = distribution(css)
++        for name, operation in [
++            ('youtube_search', lambda: browser.youtube_search('fixture video')),
++            ('video_open_and_play', lambda: browser.youtube_open_video(0)),
++            ('playback_verify', browser.youtube_play),
++            ('page_observation', browser.observe_page),
++        ]:
++            measurements = []
++            stages = {}
++            for _ in range(runs):
++                started = time.perf_counter()
++                result = operation()
++                measurements.append((time.perf_counter() - started) * 1000)
++                assert 'error' not in result, result
++                for timing in result.get('timings', []):
++                    stages.setdefault(timing['stage'], []).append(timing['elapsed_ms'])
++                if name in ('video_open_and_play', 'playback_verify') and base is UniversalBrowser:
++                    playback = result.get('playback', result)
++                    assert playback['progress_verified'], playback
++            results[name] = distribution(measurements)
++            if stages:
++                results[name + '_stages'] = {stage: distribution(values) for stage, values in stages.items()}
++    finally:
++        context.close()
++    return results
++
++
++def recovery_benchmark(playwright, worker_class=BrowserWorker, runs=3):
++    timings = []
++    warm = []
++    launcher = Mock()
++    def launch(**kwargs):
++        kwargs['headless'] = True
++        return playwright.chromium.launch_persistent_context(**kwargs)
++    launcher.chromium.launch_persistent_context.side_effect = launch
++    worker = worker_class()
++    try:
++        with tempfile.TemporaryDirectory(dir='tests') as profile:
++            with patch('backend.browser_worker.PROFILE', Path(profile)), patch('fixtures.latency_baseline.PROFILE', Path(profile)):
++                for _ in range(runs):
++                    started = time.perf_counter()
++                    worker._ensure_browser(launcher, fixture_browser(UniversalBrowser), 'https://www.youtube.com')
++                    timings.append((time.perf_counter() - started) * 1000)
++                    started = time.perf_counter()
++                    worker._ensure_browser(launcher, fixture_browser(UniversalBrowser), 'https://www.youtube.com')
++                    warm.append((time.perf_counter() - started) * 1000)
++                    worker.context.close()  # Force recovery on the next iteration.
++                worker._close_browser()
++    finally:
++        worker._close_browser()
++    return {'cold_or_recovery': distribution(timings), 'warm_reuse': distribution(warm)}
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('--runs', type=int, default=30)
++    parser.add_argument('--output', default='docs/latency-benchmark.json')
++    args = parser.parse_args()
++    if not 2 <= args.runs <= 100:
++        parser.error('--runs must be between 2 and 100')
++    logging.getLogger('orion.performance').setLevel(logging.WARNING)
++    with sync_playwright() as playwright:
++        chrome = playwright.chromium.launch(channel='chrome', headless=True)
++        report = {'environment': {'chrome': chrome.version, 'mode': 'headless',
++                  'network': 'local route.fulfill fixtures, no live YouTube or Gemini',
++                  'clock': 'performance.now in-page; perf_counter in Python',
++                  'runs': args.runs, 'skip_scenario': 'rapid successive inserted/enabled controls'},
++                  'before': benchmark(playwright, chrome, BaselineBrowser, args.runs),
++                  'after': benchmark(playwright, chrome, UniversalBrowser, args.runs),
++                  'recovery_before': recovery_benchmark(playwright, BaselineWorker),
++                  'recovery_after': recovery_benchmark(playwright)}
++        chrome.close()
++    output = Path(args.output)
++    output.parent.mkdir(parents=True, exist_ok=True)
++    output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
++    print(json.dumps(report, indent=2))
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/tests/fixtures/latency_baseline.py b/tests/fixtures/latency_baseline.py
+new file mode 100644
+index 0000000..f107b8e
+--- /dev/null
++++ b/tests/fixtures/latency_baseline.py
+@@ -0,0 +1,226 @@
++# Frozen pre-optimization implementation for local before/after benchmarks only.
++from urllib.parse import quote_plus, urlparse, urljoin, parse_qs
++import time
++from backend.universal_agent import UniversalBrowser, get_host, host_matches, INITIAL_DOMAINS
++
++YOUTUBE_SKIP_SCRIPT = "\n(() => {\n  if (!/(^|\\.)youtube\\.com$/.test(location.hostname)) return;\n  if (window.__orionSkipWatcher) return;\n  window.__orionSkipWatcher = true;\n\n  const selectors = [\n    '.ytp-ad-skip-button',\n    '.ytp-ad-skip-button-modern',\n    '.ytp-skip-ad-button',\n    'button.ytp-ad-skip-button',\n    '.ytp-ad-skip-button-container button'\n  ];\n  let lastClick = 0;\n  const trySkip = () => {\n    if (Date.now() - lastClick < 500) return;\n    for (const selector of selectors) {\n      const button = document.querySelector(selector);\n      if (!button || button.disabled) continue;\n      const style = getComputedStyle(button);\n      const visible = button.getClientRects().length > 0 &&\n        style.visibility !== 'hidden' && style.display !== 'none';\n      if (visible) {\n        lastClick = Date.now();\n        button.click();\n        break;\n      }\n    }\n  };\n  const start = () => {\n    trySkip();\n    new MutationObserver(trySkip).observe(document.documentElement, {\n      childList: true, subtree: true, attributes: true,\n      attributeFilter: ['class', 'style', 'disabled']\n    });\n    setInterval(trySkip, 250);\n  };\n  if (document.readyState === 'loading') {\n    document.addEventListener('DOMContentLoaded', start, {once:true});\n  } else { start(); }\n})();\n"
++
++class BaselineBrowser(UniversalBrowser):
++    def __init__(self, context):
++    
++            self.context = context
++    
++            self.active_page = None
++    
++            self.elements = []
++    
++            self.observed_page = None
++    
++            self.approved_domains = set(INITIAL_DOMAINS)
++    
++    
++    
++            context.route("**/*", self.guard_navigation)
++            context.add_init_script(script=YOUTUBE_SKIP_SCRIPT)
++            self.youtube_results = []
++            for existing_page in context.pages:
++                try:
++                    existing_page.evaluate(YOUTUBE_SKIP_SCRIPT)
++                except Exception:
++                    pass
++
++    def observe_page(self):
++            page = self.page()
++            self.reset_elements()
++            # A single browser round trip replaces hundreds of locator calls.
++            snapshot = page.evaluate("""selector => {
++                const elements = Array.from(document.querySelectorAll(selector))
++                  .slice(0, 350).map((el, position) => {
++                    const style = getComputedStyle(el);
++                    if (!el.getClientRects().length || style.visibility === 'hidden' ||
++                        style.display === 'none') return null;
++                    return {position, tag: el.tagName.toLowerCase(),
++                      label: (el.innerText || el.getAttribute('aria-label') ||
++                        el.getAttribute('placeholder') || el.getAttribute('title') ||
++                        el.getAttribute('value') || '').trim().slice(0, 100),
++                      href: el.getAttribute('href') || '', type: el.getAttribute('type') || '',
++                      role: el.getAttribute('role') || '', name: el.getAttribute('name') || '',
++                      editable: el.getAttribute('contenteditable') === 'true'};
++                  }).filter(Boolean).slice(0, 70);
++                return {elements, title: document.title,
++                  body: (document.body?.innerText || '').slice(0, 3500)};
++            }""", self.SELECTOR)
++            candidates = page.locator(self.SELECTOR)
++            lines = []
++            for details in snapshot['elements']:
++                position = details.pop('position')
++                index = len(self.elements)
++                self.elements.append({'locator': candidates.nth(position), **details})
++                lines.append(f"{index}: [{details['tag']}] {details['label'] or '(unlabeled)'} "
++                             f"name={details['name']} type={details['type']} href={details['href'][:120]}")
++            self.observed_page = page
++            return {'observation': f"URL: {page.url}\nTitle: {snapshot['title']}\n"
++                    f"Visible text:\n{snapshot['body']}\nInteractive elements:\n" + '\n'.join(lines),
++                    'media': self.media_state()}
++
++    def youtube_search(self, query):
++            if not isinstance(query, str) or not query.strip():
++                return {'error': 'Provide a YouTube search query.'}
++            url = 'https://www.youtube.com/results?search_query=' + quote_plus(query.strip()[:200])
++            if not self.domain_allowed(url):
++                return {'error': 'YouTube is not approved.'}
++            self.youtube_results = []
++            self.reset_elements()
++            deadline = time.monotonic() + 4.5
++            try:
++                page = self.page()
++                response = page.goto(url, wait_until='commit', timeout=4500)
++                if response and response.status >= 400:
++                    return {'error': f'YouTube returned HTTP {response.status}.'}
++                page.locator('a#video-title[href*="/watch?"]').first.wait_for(
++                    state='attached', timeout=max(1, int((deadline - time.monotonic()) * 1000)))
++                raw = page.locator('a#video-title').evaluate_all("""links => links.slice(0, 40)
++                    .map(a => ({url: a.href, title: (a.title || a.innerText || '').trim()}))""")
++                seen = set()
++                for item in raw:
++                    parsed = urlparse(item['url'])
++                    video_id = parse_qs(parsed.query).get('v', [''])[0]
++                    if (parsed.hostname not in ('youtube.com', 'www.youtube.com') or
++                        parsed.path != '/watch' or len(video_id) != 11 or video_id in seen):
++                        continue
++                    seen.add(video_id)
++                    self.youtube_results.append({'index': len(self.youtube_results),
++                        'title': item['title'][:160], 'url': item['url']})
++                    if len(self.youtube_results) >= 12:
++                        break
++                if not self.youtube_results:
++                    return {'error': 'No video results are available yet.'}
++                return {'query': query, 'results': self.youtube_results, 'url': page.url}
++            except Exception as exc:
++                return {'error': f'YouTube search unavailable: {exc}'}
++
++    def youtube_open_video(self, index):
++            """Open one of the numbered results from youtube_search."""
++            if not isinstance(index, int) or not 0 <= index < len(self.youtube_results):
++                return {"error": "Invalid YouTube result index. Search again first."}
++            selected = self.youtube_results[index]
++            url = selected["url"]
++            if not self.domain_allowed(url):
++                return {"error": "YouTube video URL is not approved."}
++            try:
++                page = self.page()
++                page.goto(url, wait_until="domcontentloaded", timeout=30000)
++                self.reset_elements()
++                page.locator("video").first.wait_for(state="attached", timeout=12000)
++                return {
++                    "opened": True,
++                    "selected_title": selected["title"],
++                    "page_title": page.title(),
++                    "url": page.url,
++                    "playback": self.youtube_play(),
++                    "ads": "Watching for YouTube's normal Skip Ad button when available."
++                }
++            except Exception as exc:
++                return {"error": f"Could not open video: {exc}"}
++
++    def youtube_play(self):
++            """Attempt playback, but never claim success without player state."""
++            try:
++                page = self.page()
++                if get_host(page.url) not in ("youtube.com", "www.youtube.com"):
++                    return {"error": "Not on YouTube."}
++                video = page.locator("video").first
++                video.wait_for(state="attached", timeout=8000)
++                result = video.evaluate('''async (v) => {
++                    try { await v.play(); }
++                    catch (e) { return {playing: !v.paused, reason: String(e)}; }
++                    return {playing: !v.paused, paused: v.paused};
++                }''')
++                return result
++            except Exception as exc:
++                return {"playing": False, "reason": str(exc)}
++
++    def media_state(self):
++            page = self.page()
++            if not host_matches(get_host(page.url), 'youtube.com'):
++                return {'site': get_host(page.url)}
++            return page.evaluate("""() => {
++                const video = document.querySelector('video');
++                const ad = !!document.querySelector('.html5-video-player.ad-showing');
++                const skip = Array.from(document.querySelectorAll(
++                  '.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button'))
++                  .some(el => el.getClientRects().length && !el.disabled &&
++                    getComputedStyle(el).visibility !== 'hidden');
++                return {site: 'youtube', video_present: !!video,
++                  playing: !!video && !video.paused && !video.ended,
++                  ad_playing: ad, skip_available: skip,
++                  auto_skip_enabled: !!window.__orionSkipWatcher};
++            }""")
++
++from backend.browser_worker import BrowserWorker, APISafeBrowser, PROFILE
++
++class BaselineWorker(BrowserWorker):
++    def _browser_alive(self):
++            if self.context is None or self.safe_browser is None:
++                return False
++            try:
++                pages = [p for p in self.context.pages if not p.is_closed()]
++                if not pages:
++                    return False
++                pages[0].evaluate("1")
++                return True
++            except Exception:
++                return False
++
++    def _ensure_browser(self, playwright, UniversalBrowser, START_URL):
++            if self._browser_alive():
++                # The previously active tab can have been closed while
++                # another approved tab remains open. Re-select one.
++                base = self.safe_browser.base
++                try:
++                    base.page()
++                except Exception:
++                    valid = [
++                        p for p in self.context.pages
++                        if not p.is_closed() and base.domain_allowed(p.url)
++                    ]
++                    if valid:
++                        base.active_page = valid[-1]
++                        base.reset_elements()
++                    else:
++                        self._close_browser()
++                if self._browser_alive():
++                    return self.safe_browser
++    
++            self._close_browser()
++            print("[WORKER] Launching Google Chrome...")
++            PROFILE.mkdir(parents=True, exist_ok=True)
++            context = playwright.chromium.launch_persistent_context(
++                user_data_dir=str(PROFILE),
++                channel="chrome",
++                headless=False,
++                viewport={"width": 1440, "height": 900},
++                accept_downloads=False,
++            )
++            self.context = context
++            try:
++                base = UniversalBrowser(context)
++                valid = [
++                    p for p in context.pages
++                    if not p.is_closed() and base.domain_allowed(p.url)
++                ]
++                if valid:
++                    base.active_page = valid[-1]
++                    base.active_page.bring_to_front()
++                else:
++                    page = context.new_page()
++                    base.active_page = page
++                    page.goto(START_URL, wait_until="domcontentloaded", timeout=20000)
++    
++                self.safe_browser = APISafeBrowser(base)
++                base.approve_domain = self.safe_browser.approve_domain
++                print("[WORKER] Chrome ready.")
++                return self.safe_browser
++            except Exception:
++                self._close_browser()
++                raise
+diff --git a/tests/fixtures/player.py b/tests/fixtures/player.py
+new file mode 100644
+index 0000000..a65d6c2
+--- /dev/null
++++ b/tests/fixtures/player.py
+@@ -0,0 +1,67 @@
++"""Local player with real HTMLVideoElement audio playback and controlled ad DOM."""
++import base64
++import io
++import wave
++from functools import lru_cache
++
++
++@lru_cache(maxsize=1)
++def player_html():
++    audio = io.BytesIO()
++    with wave.open(audio, 'wb') as wav:
++        wav.setnchannels(1)
++        wav.setsampwidth(2)
++        wav.setframerate(8000)
++        wav.writeframes(b'\0\0' * 8000 * 60)
++    encoded = base64.b64encode(audio.getvalue()).decode('ascii')
++    return '''<!doctype html><html><head><title>Local YouTube fixture</title>
++      <style>.fixture-hidden { display:none }</style></head><body>
++      <input type="search" placeholder="Search">
++      <a id="video-title" href="/watch?v=abcdefghijk" title="Fixture video">Fixture video</a>
++      <div id="movie_player" class="html5-video-player">
++        <video muted autoplay loop src="data:audio/wav;base64,''' + encoded + '''"></video>
++        <div id="controls"></div>
++      </div>
++      <script>
++      window.runSkipTrial = ({mode = 'enable', delay = 10}) => new Promise(resolve => {
++        const player = document.querySelector('#movie_player');
++        player.classList.add('ad-showing');
++        const button = document.createElement('button');
++        button.className = 'ytp-ad-skip-button';
++        button.dataset.trial = String(window.trialCounter = (window.trialCounter || 0) + 1);
++        button.textContent = 'Skip Ad';
++        if (mode === 'enable') button.disabled = true;
++        if (mode === 'aria') button.setAttribute('aria-disabled', 'true');
++        if (mode === 'stylesheet') button.classList.add('fixture-hidden');
++        let readyAt, clickedAt, early = false;
++        const createdAt = performance.now();
++        button.onclick = () => {
++          clickedAt = performance.now();
++          early = readyAt === undefined;
++          setTimeout(() => {
++            button.remove();
++            player.classList.remove('ad-showing');
++            resolve({ready_at_ms: readyAt, clicked_at_ms: clickedAt, early,
++              eligibility_wait_ms: readyAt - createdAt,
++              eligible_to_click_ms: clickedAt - readyAt,
++              confirmation_ms: performance.now() - clickedAt});
++          }, 5);
++        };
++        if (mode !== 'insert') document.querySelector('#controls').append(button);
++        setTimeout(() => {
++          readyAt = performance.now();
++          if (mode === 'insert') document.querySelector('#controls').append(button);
++          if (mode === 'enable') button.disabled = false;
++          if (mode === 'aria') button.setAttribute('aria-disabled', 'false');
++          if (mode === 'stylesheet') {
++            // CSSOM update: intentionally produces no observed DOM mutation.
++            document.styleSheets[0].insertRule('.fixture-hidden[data-trial="' + button.dataset.trial + '"] { display:block }',
++              document.styleSheets[0].cssRules.length);
++          }
++        }, delay);
++      });
++      </script></body></html>'''
++
++
++def fulfill_player(route):
++    route.fulfill(content_type='text/html', body=player_html())
+diff --git a/tests/test_api_workflow.py b/tests/test_api_workflow.py
+new file mode 100644
+index 0000000..4ba54df
+--- /dev/null
++++ b/tests/test_api_workflow.py
+@@ -0,0 +1,76 @@
++import threading
++import unittest
++from unittest.mock import Mock, patch
++
++from fastapi.testclient import TestClient
++from google.genai import types
++
++from backend import api
++from backend.browser_worker import BrowserWorker
++from backend.universal_agent import run_agent
++
++
++class APICompatibilityTests(unittest.TestCase):
++    def test_submission_polling_and_authentication(self):
++        worker = BrowserWorker()
++        worker.running = True
++        with patch.object(api, 'worker', worker), patch.object(api, 'LOCAL_TOKEN', 'fixture-token'):
++            # No lifespan context: the test exercises endpoints without launching Chrome.
++            client = TestClient(api.app)
++            self.assertEqual(client.post('/api/tasks', json={'instruction': 'find jazz'}).status_code, 401)
++            headers = {'X-ORION-Token': 'fixture-token'}
++            response = client.post('/api/tasks', json={'instruction': 'find jazz'}, headers=headers)
++            self.assertEqual(response.status_code, 202)
++            task = response.json()
++            self.assertEqual(task['status'], 'queued')
++            self.assertIsNone(task['result'])
++            worker.update_task(task['task_id'], status='finished', result={'outcome': 'finished', 'message': 'fixture'})
++            polled = client.get('/api/tasks/' + task['task_id'], headers=headers)
++            self.assertEqual(polled.json()['result']['message'], 'fixture')
++            self.assertEqual(client.get('/api/tasks/missing', headers=headers).status_code, 404)
++            self.assertEqual(client.post('/api/tasks', json={'instruction': ''}, headers=headers).status_code, 422)
++
++    def test_queue_and_browser_timings_are_additive(self):
++        worker = BrowserWorker()
++        worker.running = True
++        task = worker.submit('fixture')
++        worker._ensure_browser = Mock(return_value=Mock())
++        worker._browser_alive = Mock(return_value=True)
++        owner = threading.get_ident()
++
++        def agent(browser, instruction):
++            self.assertEqual(threading.get_ident(), owner)
++            return {'outcome': 'finished', 'message': 'fixture', 'tabs': {'tabs': []}, 'elapsed_ms': 1}
++
++        worker._execute_task(task['task_id'], Mock(), Mock(), agent, 'https://www.youtube.com')
++        result = worker.get_task(task['task_id'])['result']
++        self.assertIn('workflow_timings', result)
++        self.assertGreaterEqual(result['total_elapsed_ms'], 0)
++        self.assertNotIn(task['task_id'], worker.submitted_at)
++
++    @patch('backend.universal_agent.generate')
++    def test_manual_function_calls_keep_model_content_and_response(self, generate):
++        browser = Mock()
++        browser.page.return_value.url = 'https://youtube.com'
++        browser.observe_page.return_value = {'observation': 'fixture'}
++        browser.list_tabs.return_value = {'tabs': []}
++        browser.execute.return_value = {'playing': False, 'state': 'buffering'}
++        content = types.Content(role='model', parts=[types.Part.from_function_call(
++            name='youtube_play', args={})])
++        call = content.parts[0].function_call
++        first = Mock(candidates=[Mock(content=content)], function_calls=[call])
++        final = Mock(candidates=[Mock(content=types.Content(role='model', parts=[
++            types.Part.from_text(text='Video is buffering.')]))], function_calls=[], text='Video is buffering.')
++        generate.side_effect = [first, final]
++        result = run_agent(browser, 'play the current video')
++        self.assertEqual(result['message'], 'Video is buffering.')
++        self.assertEqual(result['actions_taken'], 1)
++        self.assertEqual(result['tool_errors'], [])
++        conversation = generate.call_args.kwargs['contents']
++        self.assertIs(conversation[1], content)
++        self.assertEqual(conversation[2].parts[0].function_response.name, 'youtube_play')
++        self.assertEqual(conversation[2].parts[0].function_response.response['state'], 'buffering')
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/tests/test_youtube_monitor.py b/tests/test_youtube_monitor.py
+new file mode 100644
+index 0000000..9769fe7
+--- /dev/null
++++ b/tests/test_youtube_monitor.py
+@@ -0,0 +1,192 @@
++import tempfile
++import threading
++import time
++import unittest
++from pathlib import Path
++from unittest.mock import Mock, patch
++
++from playwright.sync_api import sync_playwright
++
++from backend.browser_worker import BrowserWorker
++from backend.universal_agent import UniversalBrowser, YOUTUBE_SKIP_SCRIPT
++from fixtures.player import fulfill_player
++
++
++class FixtureBrowser(UniversalBrowser):
++    def __init__(self, context):
++        super().__init__(context)
++        context.route('**/*', fulfill_player)
++
++
++class MonitorTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.playwright = sync_playwright().start()
++        cls.chrome = cls.playwright.chromium.launch(channel='chrome', headless=True)
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.chrome.close()
++        cls.playwright.stop()
++
++    def setUp(self):
++        self.context = self.chrome.new_context()
++        self.browser = FixtureBrowser(self.context)
++        self.page = self.context.new_page()
++        self.browser.active_page = self.page
++        self.page.goto('https://www.youtube.com/watch?v=abcdefghijk')
++
++    def tearDown(self):
++        self.context.close()
++
++    def test_new_controls_have_no_global_cooldown(self):
++        for mode in ('insert', 'enable', 'aria'):
++            result = self.page.evaluate('opts => window.runSkipTrial(opts)', {'mode': mode})
++            self.assertFalse(result['early'])
++            self.assertLess(result['eligible_to_click_ms'], 250)
++        snapshot = self.page.evaluate('() => window.__orionSkipWatcher.snapshot()')
++        self.assertEqual(snapshot['counters']['clicks'], 3)
++        self.assertTrue(all(item['confirmed'] for item in snapshot['samples']))
++        self.assertTrue(all(item['dispatch_ms'] >= 0 for item in snapshot['samples']))
++
++    def test_css_visibility_fallback(self):
++        result = self.page.evaluate('opts => window.runSkipTrial(opts)', {'mode': 'stylesheet'})
++        self.assertFalse(result['early'])
++        self.assertLess(result['eligible_to_click_ms'], 250)
++
++    def test_disabled_hidden_and_first_hidden_match(self):
++        self.page.evaluate('''() => {
++          for (const attributes of [{disabled: true}, {hidden: true},
++            {aria: true}, {inert: true}, {opacity: true}, {pointer: true}]) {
++            const button = document.createElement('button');
++            button.className = 'ytp-ad-skip-button';
++            button.disabled = !!attributes.disabled;
++            button.hidden = !!attributes.hidden;
++            if (attributes.aria) button.setAttribute('aria-disabled', 'true');
++            if (attributes.inert) button.inert = true;
++            if (attributes.opacity) button.style.opacity = '0';
++            if (attributes.pointer) button.style.pointerEvents = 'none';
++            button.onclick = () => window.badClick = true;
++            document.body.append(button);
++          }
++        }''')
++        self.page.wait_for_timeout(150)
++        self.assertFalse(self.page.evaluate('() => !!window.badClick'))
++        result = self.page.evaluate('opts => window.runSkipTrial(opts)', {'mode': 'insert'})
++        self.assertFalse(result['early'])
++        self.assertLess(result['eligible_to_click_ms'], 250)
++
++    def test_no_duplicates_across_spa_and_full_navigation(self):
++        for _ in range(3):
++            self.page.evaluate(YOUTUBE_SKIP_SCRIPT)
++            self.page.evaluate("() => { history.pushState({}, '', '/watch?v=zyxwvutsrqp'); document.dispatchEvent(new Event('yt-navigate-finish')); }")
++            self.page.evaluate('opts => window.runSkipTrial(opts)', {'mode': 'insert'})
++        self.assertEqual(self.page.evaluate('() => window.__orionSkipWatcher.snapshot().counters.clicks'), 3)
++        self.page.goto('https://www.youtube.com/watch?v=abcdefghijk')
++        self.page.evaluate('opts => window.runSkipTrial(opts)', {'mode': 'insert'})
++        self.assertEqual(self.page.evaluate('() => window.__orionSkipWatcher.snapshot().counters.clicks'), 1)
++
++    def test_stop_and_pagehide_cleanup(self):
++        self.browser.stop_monitors()
++        self.page.evaluate("() => { const b=document.createElement('button'); b.className='ytp-ad-skip-button'; b.onclick=()=>window.badClick=true; document.body.append(b); }")
++        self.page.wait_for_timeout(150)
++        self.assertFalse(self.page.evaluate('() => !!window.badClick'))
++        self.assertFalse(self.page.evaluate('() => window.__orionSkipWatcher.snapshot().enabled'))
++        self.page.evaluate(YOUTUBE_SKIP_SCRIPT)
++        self.page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
++        self.assertFalse(self.page.evaluate('() => window.__orionSkipWatcher.snapshot().enabled'))
++        self.page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}))")
++        self.assertTrue(self.page.evaluate('() => window.__orionSkipWatcher.snapshot().enabled'))
++
++    def test_confirm_timeout_does_not_spam(self):
++        self.page.evaluate("() => { const b=document.createElement('button'); b.className='ytp-ad-skip-button'; document.body.append(b); }")
++        self.page.wait_for_timeout(300)
++        self.assertEqual(self.page.evaluate('() => window.__orionSkipWatcher.snapshot().counters.clicks'), 1)
++        self.page.wait_for_timeout(900)
++        sample = self.page.evaluate('() => window.__orionSkipWatcher.snapshot().samples[0]')
++        self.assertFalse(sample['confirmed'])
++        self.assertEqual(sample['confirmation'], 'not_confirmed')
++
++    def test_progress_verified_with_real_media(self):
++        self.page.locator('video').evaluate('v => v.play()')
++        result = self.browser.youtube_play()
++        self.assertTrue(result['progress_verified'])
++        self.assertTrue(result['playing'])
++        self.assertNotIn('error', result)
++        self.assertGreater(result['advanced_seconds'], 0.02)
++        self.assertGreaterEqual(result['observation_ms'], 300)
++
++    def set_media(self, **values):
++        self.page.locator('video').evaluate('''(v, values) => {
++          v.pause();
++          for (const [key, value] of Object.entries(values)) {
++            Object.defineProperty(v, key, {get: () => value, configurable:true});
++          }
++        }''', values)
++
++    def test_playback_states(self):
++        for values, state in [({'readyState': 0, 'paused': False}, 'loading'),
++                              ({'readyState': 4, 'paused': True}, 'paused'),
++                              ({'readyState': 4, 'paused': False, 'currentTime': 10}, 'buffering'),
++                              ({'error': {'code': 3, 'message': 'fixture decode error'}}, 'error')]:
++            self.page.goto('https://www.youtube.com/watch?v=abcdefghijk')
++            self.set_media(**values)
++            result = self.browser.media_state()
++            self.assertEqual(result['state'], state)
++            self.assertFalse(result['playing'])
++        self.page.goto('https://www.youtube.com/watch?v=abcdefghijk')
++        self.page.evaluate("() => document.querySelector('#movie_player').classList.add('ad-showing')")
++        self.page.locator('video').evaluate('v => v.play()')
++        result = self.browser.media_state()
++        self.assertEqual(result['state'], 'advertisement')
++        self.assertTrue(result['ad_playing'])
++        self.page.locator('video').evaluate('v => v.remove()')
++        self.assertEqual(self.browser.media_state()['state'], 'opened')
++
++    def test_video_opening_verifies_playback(self):
++        self.browser.youtube_results = [{'title': 'Fixture video', 'url': self.page.url}]
++        result = self.browser.youtube_open_video(0)
++        self.assertTrue(result['opened'])
++        self.assertTrue(result['playback']['progress_verified'])
++        self.assertIn('error', self.browser.youtube_open_video(1))
++
++    def test_domain_guards(self):
++        self.browser.youtube_results = [{'title': 'bad', 'url': 'https://unapproved.example/watch?v=abcdefghijk'}]
++        self.assertIn('error', self.browser.youtube_open_video(0))
++        route = Mock()
++        route.request.is_navigation_request.return_value = True
++        route.request.url = 'http://localhost/private'
++        self.browser.guard_navigation(route)
++        route.abort.assert_called_once()
++        route.continue_.assert_not_called()
++
++    def test_browser_recovery_stays_on_owner_thread(self):
++        worker = BrowserWorker()
++        owner = threading.get_ident()
++        launcher = Mock()
++        calls = []
++
++        def launch(**kwargs):
++            calls.append(threading.get_ident())
++            kwargs['headless'] = True
++            return self.playwright.chromium.launch_persistent_context(**kwargs)
++
++        launcher.chromium.launch_persistent_context.side_effect = launch
++        with tempfile.TemporaryDirectory(dir='tests') as profile:
++            with patch('backend.browser_worker.PROFILE', Path(profile)):
++                browser = worker._ensure_browser(launcher, FixtureBrowser, 'https://www.youtube.com')
++                first = worker.context
++                self.assertIs(worker._ensure_browser(launcher, FixtureBrowser, 'https://www.youtube.com'), browser)
++                extra = worker.context.new_page()
++                extra.goto('https://www.youtube.com/watch?v=abcdefghijk')
++                browser.base.active_page.close()
++                self.assertIs(worker._ensure_browser(launcher, FixtureBrowser, 'https://www.youtube.com').page(), extra)
++                first.close()
++                worker._ensure_browser(launcher, FixtureBrowser, 'https://www.youtube.com')
++                self.assertIsNot(worker.context, first)
++                worker._close_browser()
++        self.assertEqual(calls, [owner, owner])
++
++
++if __name__ == '__main__':
++    unittest.main()
