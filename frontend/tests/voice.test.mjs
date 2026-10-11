@@ -77,12 +77,15 @@ test('autoplay denial keeps audio for explicit Play response without another API
   await f.voice.speak(task());assert.equal(f.voice.getSnapshot().canReplay,true);assert.match(f.voice.getSnapshot().notice,/blocked/);
   allowed=true;f.voice.replay();await tick();assert.equal(f.voice.getSnapshot().speech,'speaking');assert.equal(f.calls.synthesis.length,1);f.voice.dispose();
 });
-test('spoken responses read the actual displayed result or error without canned summaries',async()=>{
-  for (const status of ['finished','incomplete','failed','paused']) {
+test('spoken responses read successful answers and never read technical failures',async()=>{
+  for (const status of ['finished']) {
     const message = 'Here are your results.\n1. A detailed answer with the requested information.';
     assert.equal(spokenResponse(task(status,message)),message);
   }
-  assert.equal(spokenResponse({...task('failed'),result:null,error:'Website access denied.'}),'Website access denied.');
+  assert.equal(spokenResponse({...task('failed'),result:null,error:'Website access denied.'}),'');
+  assert.equal(spokenResponse(task('incomplete','Gemini API error 503: UNAVAILABLE')), '');
+  assert.equal(spokenResponse(task('finished','Browser task failed: 503 UNAVAILABLE')), '');
+  assert.match(spokenResponse(task('paused')), /Human verification/);
   assert.equal(spokenResponse(task('running')),'');
   assert.equal(commandFromTranscript('Hey ORION, open YouTube.'),'open YouTube.');
   const f=fixture();const message='A full response. '.repeat(100);

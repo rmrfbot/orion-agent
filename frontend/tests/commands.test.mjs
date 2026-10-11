@@ -54,3 +54,16 @@ test('closing controller preserves pending task without cancelling backend',asyn
   session.start();const submitted=session.submit('list tabs');await tick();session.stop();resolve(task());await submitted;
   assert.equal(saved.getItem('orion.pending-task'),'fixture-123');
 });
+
+test('provider failure stays out of chat and never triggers speech or command replay', async()=>{
+  let posts=0,spoken=0;
+  const session=new CommandSession({onResponse:()=>spoken++,request:async path=>{
+    if(path==='/api/tasks'){posts++;return task('queued');}
+    return {...task('failed'),result:{message:"Browser task failed: 503 UNAVAILABLE {'error': 'raw provider details'}"}};
+  }});
+  session.start();await session.submit('do something');
+  assert.equal(posts,1);assert.equal(spoken,0);
+  assert.equal(session.getSnapshot().messages.filter(m=>m.role==='assistant').length,1);
+  assert.doesNotMatch(session.getSnapshot().notice,/503|UNAVAILABLE|provider details/);
+  assert.equal(session.getSnapshot().busy,false);session.stop();
+});

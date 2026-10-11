@@ -111,12 +111,10 @@ export class CommandSession {
       await this.poll(task.task_id, generation);
     } catch (error) {
       if (generation !== this.generation) return true;
-      const detail = error instanceof Error ? error.message : "Cannot reach ORION.";
       const message = error instanceof RequestError && error.status
-        ? detail
-        : `${detail} The command may have reached the backend. Check Chrome before retrying; it was not resent.`;
+        ? "ORION couldn't accept this request. Check the backend connection before trying again."
+        : "The connection was interrupted. The command may have reached the backend. Check Chrome before retrying; it was not resent.";
       this.update({ busy: false, notice: message });
-      this.message("assistant", message, "failed");
     }
     return true;
   }
@@ -130,7 +128,17 @@ export class CommandSession {
         if (terminal(task.status)) {
           this.remember(null);
           this.update({ busy: false });
-          const text = task.result?.message || task.error || `Task ${statusLabels[task.status].toLowerCase()}.`;
+          const raw = task.result?.message || task.error || '';
+          const technical = /Configured Gemini|Browser task failed|Gemini API error|UNAVAILABLE|Traceback|\{'error'|"error"\s*:|APIError|HTTPException/i.test(raw);
+          const text = task.status === 'failed'
+            ? "That request couldn't be completed. Check Chrome before trying again."
+            : technical ? "Some steps may have completed. Check Chrome before trying again."
+            : raw || `Task ${statusLabels[task.status].toLowerCase()}.`;
+          if (task.status === 'failed' || (task.status === 'incomplete' && technical)) {
+            this.update({notice: text});
+            this.sources.delete(id);
+            return;
+          }
           this.message("assistant", text, task.status);
           try { this.options.onResponse?.(text, task, this.sources.get(id) ?? 'typed'); } catch { /* Response consumers must not restart task polling. */ }
           this.sources.delete(id);
@@ -143,9 +151,8 @@ export class CommandSession {
           this.remember(null);
           const text = error.status === 404
             ? "The backend no longer has this task, possibly after a restart. Its completion is unknown; it was not resent."
-            : error.message;
+            : "ORION couldn't access this task. Check the backend connection and local token.";
           this.update({ busy: false, notice: text, task: null });
-          this.message("assistant", text, "failed");
           return;
         }
         this.update({ notice: "Connection interrupted. Reconnecting to this task without resending it…" });

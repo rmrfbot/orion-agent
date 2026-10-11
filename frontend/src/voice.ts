@@ -22,8 +22,10 @@ export function commandFromTranscript(text: string) {
   return text.replace(/^\s*(?:hey\s+)?orion\b[\s,.:!-]*/i, '').trim();
 }
 export function spokenResponse(task: BrowserTask): string {
-  if (!['finished', 'incomplete', 'failed', 'paused'].includes(task.status)) return '';
-  return task.result?.message || task.error || `Task ${task.status === 'finished' ? 'completed' : task.status === 'paused' ? 'human verification required' : task.status}.`;
+  if (!['finished', 'paused'].includes(task.status)) return '';
+  if (task.status === 'paused') return 'Human verification is required. Please complete it in Chrome.';
+  if (/Configured Gemini|Browser task failed|Gemini API error|UNAVAILABLE|Traceback|\{'error'|"error"\s*:|APIError|HTTPException/i.test(task.result?.message || '')) return '';
+  return task.result?.message || 'Task completed.';
 }
 
 /** Browser-independent lifecycle controller; injected IO makes permission/audio races testable. */

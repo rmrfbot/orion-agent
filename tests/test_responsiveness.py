@@ -11,6 +11,40 @@ from backend.universal_agent import run_agent
 
 
 class DirectCommandTests(unittest.TestCase):
+    @patch('backend.universal_agent.generate')
+    def test_model_overload_after_action_preserves_partial_completion(self, generate):
+        from google.genai import types
+        from backend.universal_agent import ModelUnavailable
+        browser = Mock()
+        browser.page.return_value.url = 'https://www.youtube.com/'
+        browser.observe_page.return_value = {'url': 'https://www.youtube.com/'}
+        browser.list_tabs.return_value = {'tabs': []}
+        browser.execute.return_value = {'clicked': True}
+        content = types.Content(role='model', parts=[types.Part.from_function_call(
+            name='click_element', args={'index': 0})])
+        generate.side_effect = [Mock(candidates=[Mock(content=content)],
+                                    function_calls=[content.parts[0].function_call]),
+                                ModelUnavailable('503 UNAVAILABLE raw provider error')]
+        result = run_agent(browser, 'Click the video matching this description')
+        self.assertEqual(result['outcome'], 'incomplete')
+        self.assertEqual(result['actions_taken'], 1)
+        self.assertIn('Chrome was updated', result['message'])
+        self.assertNotIn('UNAVAILABLE', result['message'])
+        browser.execute.assert_called_once()
+
+    @patch('backend.universal_agent.generate')
+    def test_model_overload_before_action_has_friendly_failure(self, generate):
+        from backend.universal_agent import ModelUnavailable
+        browser = Mock()
+        browser.page.return_value.url = 'https://www.youtube.com/'
+        browser.observe_page.return_value = {'url': 'https://www.youtube.com/'}
+        browser.list_tabs.return_value = {'tabs': []}
+        generate.side_effect = ModelUnavailable('503 UNAVAILABLE raw provider error')
+        result = run_agent(browser, 'Inspect the page and find a suitable video')
+        self.assertEqual(result['outcome'], 'failed')
+        self.assertNotIn('503', result['message'])
+        browser.execute.assert_not_called()
+
     def test_explicit_commands_and_indices(self):
         self.assertEqual(direct_command('skip the ad'), ('youtube_skip_ad', {}))
         self.assertEqual(direct_command('pause the video'), ('youtube_pause', {}))

@@ -1621,6 +1621,10 @@ Never claim success without evidence.
 
 
 
+class ModelUnavailable(RuntimeError):
+    """Inference failed; previously executed browser actions must not be replayed."""
+
+
 def generate(contents, config):
     models = [MODEL] + ([FALLBACK] if FALLBACK and FALLBACK != MODEL else [])
     last_error = None
@@ -1634,7 +1638,7 @@ def generate(contents, config):
                 raise
             last_error = exc
             # One attempt per model; the configured fallback is tried immediately.
-    raise RuntimeError(f'Configured Gemini models unavailable: {last_error}')
+    raise ModelUnavailable(f'Configured Gemini models unavailable: {last_error}')
 
 
 # ============================================================
@@ -1684,6 +1688,7 @@ def run_agent(browser, instruction):
     timings = []
 
     tool_errors = []
+    completed_actions = 0
     network_calls = set()
     playback_evidence = None
 
@@ -1792,6 +1797,7 @@ def run_agent(browser, instruction):
                 return finish("paused", initial_state["error"], initial_state.get("verification"))
             if initial_state.get('error'):
                 return finish('incomplete', str(initial_state['error']))
+            completed_actions += 1
         else:
             with measure('page.initial_observation', timings):
                 initial_state = browser.observe_page()
@@ -2005,6 +2011,13 @@ def run_agent(browser, instruction):
 
 
                     actions_taken += 1
+                    if (name in ('navigate', 'open_tab', 'click_element', 'press_enter', 'scroll_page',
+                                 'youtube_search', 'youtube_open_video', 'youtube_play', 'youtube_pause',
+                                 'youtube_skip_ad', 'switch_tab', 'close_tab') and
+                            isinstance(result, dict) and not result.get('error') and
+                            not result.get('human_intervention_required') and
+                            (name != 'youtube_skip_ad' or result.get('skipped'))):
+                        completed_actions += 1
                     record_playback(name, result)
                     if isinstance(result, dict) and result.get("human_intervention_required"):
                         return finish("paused", result["error"], result.get("verification"))
@@ -2088,7 +2101,7 @@ def run_agent(browser, instruction):
 
 
 
-    except errors.APIError as exc:
+    except (ModelUnavailable, errors.APIError) as exc:
 
         print(f"\n[GEMINI API ERROR] {exc}")
 
@@ -2096,9 +2109,10 @@ def run_agent(browser, instruction):
 
         return finish(
 
-            "failed",
+            "incomplete" if completed_actions else "failed",
 
-            f"Gemini API error {exc.code}: {exc.message}"
+            "Chrome was updated, but the remaining steps could not be confirmed. Check the page before retrying."
+            if completed_actions else "ORION is temporarily busy. Please try again shortly."
 
         )
 
@@ -2112,9 +2126,10 @@ def run_agent(browser, instruction):
 
         return finish(
 
-            "failed",
+            "incomplete" if completed_actions else "failed",
 
-            f"Browser task failed: {exc}"
+            "Chrome was updated, but the remaining steps could not be confirmed. Check the page before retrying."
+            if completed_actions else "That request could not be completed. Check Chrome before trying again."
 
         )
 
