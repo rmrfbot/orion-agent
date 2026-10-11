@@ -1,6 +1,7 @@
 """Bounded, asynchronous ElevenLabs REST calls. Recordings stay in memory."""
 import asyncio
 import io
+import json
 import os
 import re
 import time
@@ -70,6 +71,19 @@ class VoiceService:
                                 if response.status_code == 429:
                                     raise HTTPException(429, 'ElevenLabs quota or rate limit reached. No automatic retry was sent.')
                                 if response.status_code in (401, 403):
+                                    error_body = bytearray()
+                                    async for chunk in response.aiter_bytes():
+                                        if len(error_body) + len(chunk) > 8192:
+                                            break
+                                        error_body.extend(chunk)
+                                    try:
+                                        detail = json.loads(error_body).get('detail', {})
+                                        missing_permission = isinstance(detail, dict) and detail.get('status') == 'missing_permissions'
+                                    except (ValueError, AttributeError):
+                                        missing_permission = False
+                                    if missing_permission:
+                                        permission = 'speech_to_text' if path == 'speech-to-text' else 'text_to_speech'
+                                        raise HTTPException(503, f'ElevenLabs API key is missing {permission} permission. Enable it in your ElevenLabs API key settings. If you replace the key in .env, restart the backend.')
                                     raise HTTPException(503, 'ElevenLabs rejected the backend configuration. Check credentials and voice access.')
                                 raise HTTPException(502, 'ElevenLabs could not complete the voice request. Check the selected model and voice.')
                             chunks, size = [], 0
@@ -93,7 +107,6 @@ class VoiceService:
                                    data={'model_id': 'scribe_v2', 'language_code': 'en',
                                          'tag_audio_events': 'false', 'diarize': 'false',
                                          'timestamps_granularity': 'none'})
-            import json
             try:
                 text = json.loads(raw)['text']
                 if not isinstance(text, str):

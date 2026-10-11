@@ -99,6 +99,24 @@ class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException):
                 await VoiceService(httpx.MockTransport(lambda _:httpx.Response(200,json=body))).transcribe(wav())
 
+    async def test_missing_permission_reports_only_safe_actionable_details(self):
+        for status in (401, 403):
+            requests = []
+            def handle(request):
+                requests.append(request)
+                return httpx.Response(status, json={'detail': {
+                    'status': 'missing_permissions', 'message': 'fixture-secret untrusted provider text'}})
+            service = VoiceService(httpx.MockTransport(handle))
+            for operation, permission in ((lambda: service.transcribe(wav()), 'speech_to_text'),
+                                          (lambda: service.speak('Hello.'), 'text_to_speech')):
+                with self.assertRaises(HTTPException) as caught:
+                    await operation()
+                self.assertEqual(caught.exception.status_code, 503)
+                self.assertIn(permission, caught.exception.detail)
+                self.assertIn('API key settings', caught.exception.detail)
+                self.assertNotIn('fixture-secret', caught.exception.detail)
+            self.assertEqual(len(requests), 2)
+
     async def test_slow_voice_request_leaves_event_loop_and_browser_worker_free(self):
         started=asyncio.Event();release=asyncio.Event();ticks=[]
         async def handle(_):
