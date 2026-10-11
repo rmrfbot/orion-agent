@@ -25,9 +25,19 @@ import { VoiceControls } from './VoiceControls';
 import { WindowSession } from './window-session';
 import { WakeWordSession } from './wake-word';
 
+const LAUNCH_TOKEN=(()=>{
+  try{
+    const match=window.location.hash.match(/(?:^#|&)token=([^&]+)/);
+    if(!match)return '';
+    const value=decodeURIComponent(match[1]);
+    window.history.replaceState(null,'',window.location.pathname+window.location.search);
+    return value;
+  }catch{return '';}
+})();
+
 function App() {
   const [desktop, setDesktop] = useState(() => !!desktopCore());
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(LAUNCH_TOKEN);
   const [input, setInput] = useState("");
   const [connection, setConnection] = useState<'checking' | 'connected' | 'disconnected'>('checking');
   const [browserState, setBrowserState] = useState('not_started');
@@ -54,6 +64,8 @@ function App() {
   }));
   const wakeState=useSyncExternalStore(wake.subscribe,wake.getSnapshot);
   const [wakeSupported]=useState(()=>!!browserWakeRecognizer());
+  const [autoWake]=useState(()=>new URLSearchParams(window.location.search).get('wake')==='1');
+  const autoWakeStarted=useRef(false);
   const [shell]=useState(()=>{
     let storage:Storage|undefined;try{storage=localStorage;}catch{/* Optional preference. */}
     return new WindowSession({native:!!desktopCore(),storage,invoke:(command,args)=>{
@@ -75,7 +87,7 @@ function App() {
   useEffect(()=>{
     session.setResponseHandler((_text,task)=>{void voice.speak(task);});
     void shell.load();
-    const cancel=()=>{if(document.hidden){wake.stop();voice.suspend();}};
+    const cancel=()=>{if(document.hidden){if(!autoWake)wake.stop();voice.suspend();}};
     const close=()=>{wake.stop();voice.suspend();};
     document.addEventListener('visibilitychange',cancel);window.addEventListener('pagehide',close);
     let active=true;const cleanups:(()=>void)[]=[];
@@ -83,7 +95,20 @@ function App() {
       void listenNative(event,handler).then(cleanup=>{if(active)cleanups.push(cleanup);else cleanup();}).catch(()=>{});
     }
     return()=>{active=false;cleanups.forEach(fn=>fn());document.removeEventListener('visibilitychange',cancel);window.removeEventListener('pagehide',close);wake.dispose();voice.dispose();session.setResponseHandler(undefined);};
-  },[session,voice,shell,wake]);
+  },[session,voice,shell,wake,autoWake]);
+
+  useEffect(()=>{
+    if(!LAUNCH_TOKEN)return;
+    session.setRequest((path,init)=>apiRequest(path,init,LAUNCH_TOKEN));
+    voice.setTransport(browserVoiceIO(LAUNCH_TOKEN));
+  },[session,voice]);
+
+  useEffect(()=>{
+    if(!autoWake||autoWakeStarted.current||!wakeSupported||!connected||(!desktop&&!token.trim()))return;
+    autoWakeStarted.current=true;
+    wake.start();
+  },[autoWake,wakeSupported,connected,desktop,token,wake]);
+
 
   useEffect(()=>{
     requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('[aria-label="Browser command"]')?.focus());

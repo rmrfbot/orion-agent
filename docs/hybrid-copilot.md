@@ -36,9 +36,12 @@ Close an older desktop if Windows reports `app.exe` locked, and close any separa
 
 ## Chrome hands-free wake phrase
 
-In the Chrome-hosted ORION UI, select **Enable Hey Orion** and allow microphone
-and speech-recognition access when Chrome asks. Wake recognition stays off until
-you enable it and pauses while ORION records or executes a command. Say
+The launcher opens the Chrome-hosted ORION UI with wake mode requested. Once
+ORION is connected and its local token is available, it starts **Hey Orion**
+automatically. Allow microphone and speech-recognition access when Chrome asks;
+if Chrome blocks automatic startup, select **Enable Hey Orion** in the UI.
+Wake recognition stays on in the background for launcher-started wake mode and
+pauses while ORION records or executes a command. Say
 **“Hey Orion”**, then speak the command; Chrome speech recognition transcribes
 the command and sends its text through ORION's normal task API. If both words
 are spoken together, the recognized text after the wake phrase is used; if the
