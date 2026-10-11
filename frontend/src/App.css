@@ -1,5 +1,4 @@
 
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap");
 
 :root {
   font-family: "DM Sans", sans-serif;
@@ -483,12 +482,10 @@ button {
 
 @media (max-width: 1150px) {
   .app {
-    grid-template-columns: 210px minmax(0, 1fr);
+    grid-template-columns: 180px minmax(0, 1fr) 250px;
   }
 
-  .activity-panel {
-    display: none;
-  }
+  .activity-panel { padding: 18px 14px; }
 }
 
 @media (max-width: 650px) {
@@ -528,4 +525,27 @@ button {
   .composer-area {
     padding: 12px;
   }
+}
+main, .conversation { min-height: 0; min-width: 0; }
+.sidebar, .activity-panel { overflow-y: auto; min-height: 0; }
+.hero.compact { margin: 12px auto 20px; }
+.hero.compact .hero-symbol { display: none; }
+.task-status.failed, .message-status.failed { color: #ff9199; }
+.task-status.incomplete, .message-status.incomplete { color: #ffd084; }
+.task-status.queued, .task-status.running { color: #91bfff; }
+.task-status.standby { color: #a3b3c8; }
+.browser-state { color: #a3b3c8; font-size: 12px; line-height: 1.6; }
+.retry-button { background: #15283e; color: #e9eef8; border: 1px solid #42658a; border-radius: 8px; padding: 8px 14px; }
+button:disabled { cursor: default; opacity: .5; }
+button:focus-visible, input:focus-visible { outline: 2px solid #91bfff; outline-offset: 3px; }
+@media (max-height: 720px) {
+  .sidebar { gap: 20px; padding-top: 18px; }
+  .hero { margin: 18px auto; }
+  .hero-symbol { width: 48px; height: 48px; }
+  .activity-panel { gap: 16px; }
+}
+@media (max-width: 650px) {
+  .app { height: auto; min-height: 100vh; }
+  main { min-height: 550px; }
+  .activity-panel { display: flex; }
 }

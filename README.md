@@ -8,15 +8,12 @@ is embedded in the native executable; Gemini and other `.env` credentials are
 not bundled. Rust attaches the token to requests to `http://127.0.0.1:8000`, so
 the desktop app needs no token entry and does not rely on the Vite dev proxy.
 The backend must be running with the same token. Rebuild the desktop app after
-changing it. An installer carries this local credential, so it is intended for
-your matching backend configuration. Browser-only development retains manual
-token entry.
+changing it. This embedded credential is for local development/demo builds,
+not secure distribution. Browser-only development retains manual token entry.
 
-Build the configured desktop installer from `frontend` with:
-
-```powershell
-npm.cmd exec tauri build
-```
+For the native presentation window, backend startup commands, reconnect behavior,
+and validation results, see [the desktop presentation guide](docs/desktop-presentation.md).
+Run `npx.cmd tauri dev` from `frontend`; no installer is needed.
 
 Simple searches use a direct route without model calls:
 

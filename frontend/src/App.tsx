@@ -1,5 +1,5 @@
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Activity,
   ArrowUp,
@@ -13,76 +13,32 @@ import {
   Settings2,
   Terminal,
   UserRound,
-  Mic,
 } from "lucide-react";
 import "./App.css";
-import { desktopCore, desktopRequest } from "./desktop";
-
-type TaskStatus =
-  | "queued"
-  | "running"
-  | "finished"
-  | "incomplete"
-  | "failed";
-
-type TaskResult = {
-  elapsed_ms?: number;
-  total_elapsed_ms?: number;
-  outcome?: string;
-  message?: string;
-  actions_taken?: number;
-  tool_errors?: {
-    tool: string;
-    message: string;
-  }[];
-  tabs?: {
-    tabs: {
-      index: number;
-      title: string;
-      url: string;
-      active: boolean;
-    }[];
-  };
-};
-
-type BrowserTask = {
-  task_id: string;
-  instruction: string;
-  status: TaskStatus;
-  result: TaskResult | null;
-  error: string | null;
-};
-
-type Message = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-};
-
-const wait = (ms: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-const initialMessage: Message = {
-  id: "welcome",
-  role: "assistant",
-  content:
-    "ORION online. All systems nominal. Standing by for your command, boss.",
-};
+import { desktopCore, apiRequest } from "./desktop";
+import { CommandSession, delay, statusLabels } from "./commands";
+import type { Request } from "./commands";
 
 function App() {
   const [desktop, setDesktop] = useState(() => !!desktopCore());
   const [token, setToken] = useState("");
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([
-    initialMessage,
-  ]);
-  const [task, setTask] = useState<BrowserTask | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [notice, setNotice] = useState("");
-
+  const [connection, setConnection] = useState<'checking' | 'connected' | 'disconnected'>('checking');
+  const [browserState, setBrowserState] = useState('not_started');
   const bottomRef = useRef<HTMLDivElement>(null);
-  const busyRef = useRef(false);
+  const [session] = useState(() => {
+    let storage: Storage | undefined;
+    try { storage = window.localStorage; } catch { /* Storage is optional. */ }
+    const request: Request = (path, init) => apiRequest(path, init);
+    return new CommandSession({ request, storage });
+  });
+  const { messages, task, busy, notice, lastInstruction } = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const connected = connection === 'connected';
+
+  useEffect(() => {
+    session.start();
+    return () => session.stop();
+  }, [session]);
 
   useEffect(() => {
     const detect = () => setDesktop(!!desktopCore());
@@ -90,184 +46,35 @@ function App() {
     return () => window.removeEventListener("load", detect);
   }, []);
 
-  // ======================================================
-  // BACKEND HEALTH MONITOR
-  // ======================================================
-
   useEffect(() => {
     let active = true;
-
     const check = async () => {
-      try {
-        const response = desktop ? null : await fetch("/health");
-        const data = desktop
-          ? await desktopRequest("/health") as { browser_worker?: boolean }
-          : await response!.json();
-
-        if (active) {
-          setConnected(
-            (desktop || response?.ok === true) && data.browser_worker === true
-          );
+      while (active) {
+        try {
+          const data = await apiRequest<{browser_worker: boolean; browser_state?: string}>('/health');
+          if (active) {
+            setConnection(data.browser_worker ? 'connected' : 'disconnected');
+            setBrowserState(data.browser_state ?? 'unknown');
+          }
+        } catch {
+          if (active) setConnection('disconnected');
         }
-      } catch {
-        if (active) setConnected(false);
+        await delay(2000);
       }
     };
-
     void check();
-
-    const interval = window.setInterval(check, 5000);
-
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
+    return () => { active = false; };
   }, [desktop]);
 
-  // Auto-scroll chat
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({
-      behavior: "smooth",
-    });
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, task?.status]);
 
-  // ======================================================
-  // CHAT MESSAGE HANDLING
-  // ======================================================
-
-  const addMessage = (
-    role: Message["role"],
-    content: string
-  ) => {
-    setMessages((old) => [
-      ...old,
-      {
-        id: crypto.randomUUID(),
-        role,
-        content,
-      },
-    ]);
-  };
-
-  // ======================================================
-  // API REQUEST WRAPPER
-  // ======================================================
-
-  const request = async (
-    url: string,
-    init?: RequestInit
-  ) => {
-    if (desktop) return desktopRequest(url, init);
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        "X-ORION-Token": token.trim(),
-        ...(init?.headers || {}),
-      },
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-
-      throw new Error(
-        `HTTP ${response.status}: ${body.slice(0, 350)}`
-      );
-    }
-
-    return response.json();
-  };
-
-  // ======================================================
-  // SUBMIT BROWSER COMMAND
-  // ======================================================
-
-  const submit = async () => {
-    const instruction = input.trim();
-
-    if (!instruction || busyRef.current) return;
-
-    if (!desktop && !token.trim()) {
-      setNotice(
-        "Enter your local ORION API token to connect."
-      );
-      return;
-    }
-
-    busyRef.current = true;
-    setBusy(true);
-    setNotice("");
-    setInput("");
-    setTask(null);
-
-    addMessage("user", instruction);
-
-    try {
-      const submittedAt = performance.now();
-      const created = (await request("/api/tasks", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ instruction }),
-      })) as BrowserTask;
-
-      setTask(created);
-
-      const deadline = Date.now() + 180_000;
-      let finalTask = created;
-
-      // Poll task status until complete.
-      while (Date.now() < deadline) {
-        await wait(250);
-
-        finalTask = (await request(
-          `/api/tasks/${created.task_id}`
-        )) as BrowserTask;
-
-        setTask(finalTask);
-
-        if (
-          ["finished", "failed", "incomplete"].includes(
-            finalTask.status
-          )
-        ) {
-          break;
-        }
-      }
-
-      if (
-        finalTask.status === "queued" ||
-        finalTask.status === "running"
-      ) {
-        addMessage(
-          "assistant",
-          "Mission is still running. The dashboard stopped waiting, but the browser worker may continue executing it."
-        );
-      } else {
-        console.debug('[PERF] command_to_result_ms', performance.now() - submittedAt);
-        addMessage(
-          "assistant",
-          finalTask.result?.message ||
-            finalTask.error ||
-            `Task ended with status: ${finalTask.status}`
-        );
-      }
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unknown request error.";
-
-      addMessage(
-        "assistant",
-        `Mission error: ${message}`
-      );
-
-      setNotice(message);
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
+  const submit = async (instruction = input) => {
+    if ((!desktop && !token.trim()) || !connected) return;
+    if (!instruction.trim() || busy) return;
+    setInput('');
+    await session.submit(instruction);
   };
 
   const activeTabs =
@@ -308,8 +115,8 @@ function App() {
 
             <span>
               {connected
-                ? "Browser worker online"
-                : "Backend offline"}
+                ? "Connected"
+                : connection === 'checking' ? "Connecting?" : "Disconnected"}
             </span>
           </div>
         </div>
@@ -319,7 +126,7 @@ function App() {
             CONNECTION
           </p>
 
-          {desktop ? <p className="hint">Desktop connection configured automatically.</p> : <>
+          {desktop ? <p className="hint">Desktop connection ready. No token entry needed.</p> : <>
           <label htmlFor="api-token">
             Local API token
           </label>
@@ -331,7 +138,7 @@ function App() {
             placeholder="Paste local token"
             value={token}
             onChange={(e) =>
-              setToken(e.target.value)
+              { const value = e.target.value; session.setRequest((path, init) => apiRequest(path, init, value)); setToken(value); }
             }
             autoComplete="off"
           />
@@ -358,12 +165,12 @@ function App() {
 
           <div className="topbar-right">
             <Activity size={15} />
-            <span>Browser Automation</span>
+            <span className={`connection-label ${connected ? 'connected' : ''}`}>{connected ? 'Connected' : connection === 'checking' ? 'Connecting' : 'Disconnected'}</span>
           </div>
         </header>
 
-        <section className="conversation">
-          <div className="hero">
+        <section className="conversation" aria-label="Conversation">
+          <div className={`hero ${messages.length > 1 ? 'compact' : ''}`}>
             <div className="hero-symbol">
               <Orbit size={31} />
             </div>
@@ -376,11 +183,11 @@ function App() {
             </p>
           </div>
 
-          <div className="messages">
+          <div className="messages" role="log" aria-live="polite" aria-relevant="additions">
             {messages.map((message) => (
               <div
                 key={message.id}
-                className={`message ${message.role}`}
+                className={`message ${message.role} ${message.status ?? ''}`}
               >
                 <div className="message-avatar">
                   {message.role === "assistant" ? (
@@ -397,6 +204,7 @@ function App() {
                       : "YOU"}
                   </strong>
 
+                  {message.status && <span className={`result-label ${message.status}`}>{statusLabels[message.status]}</span>}
                   <p>{message.content}</p>
                 </div>
               </div>
@@ -408,7 +216,7 @@ function App() {
                   size={16}
                   className="spin"
                 />
-                ORION is processing your command...
+                {notice ? 'Waiting to reconnect...' : task?.status === 'queued' ? 'Command queued...' : task?.status === 'running' ? 'ORION is working in Chrome...' : 'Sending command...'}
               </div>
             )}
 
@@ -418,13 +226,22 @@ function App() {
 
         {/* COMMAND INPUT */}
         <section className="composer-area">
+          {!connected && (
+            <div className="notice connection-notice" role="status">
+              <Radio size={16} />
+              {connection === 'checking' ? 'Connecting to ORION?' : 'Start the ORION backend. Mission Control reconnects automatically.'}
+            </div>
+          )}
           {notice && (
-            <div className="notice">
+            <div className="notice" role="status">
               <CircleAlert size={16} />
               {notice}
             </div>
           )}
 
+          {!busy && lastInstruction && (task?.status === 'failed' || task?.status === 'incomplete' || notice) &&
+            <button className="retry-button" disabled={!connected || (!desktop && !token.trim())}
+              onClick={() => void submit(lastInstruction)}>Retry last command</button>}
           <form
             className="composer"
             onSubmit={(e) => {
@@ -439,20 +256,14 @@ function App() {
               }
               placeholder="Enter your command, Commander..."
               disabled={busy}
+              aria-label="Browser command"
+              autoComplete="off"
               maxLength={2000}
             />
 
-            {/* Voice activation is coming later */}
-            <span
-              className="voice-placeholder"
-              title="Voice integration coming soon"
-            >
-              <Mic size={19} />
-            </span>
-
             <button
               type="submit"
-              disabled={busy || !input.trim()}
+              disabled={busy || !input.trim() || !connected || (!desktop && !token.trim())}
               aria-label="Send command"
             >
               <ArrowUp size={21} />
@@ -479,29 +290,30 @@ function App() {
           </p>
 
           <h3>
-            {task?.instruction || "Awaiting orders"}
+            {task?.instruction || lastInstruction || "Awaiting orders"}
           </h3>
 
-          <div className="task-status">
+          <div className={`task-status ${task?.status ?? 'standby'}`} role="status">
             {task?.status === "finished" ? (
               <CheckCircle2 size={17} />
+            ) : task?.status === 'failed' || task?.status === 'incomplete' ? (
+              <CircleAlert size={17} />
             ) : task ? (
-              <LoaderCircle size={17} />
+              <LoaderCircle size={17} className="spin" />
             ) : (
               <Radio size={17} />
             )}
 
             <span>
-              {task?.status?.toUpperCase() ||
-                "STANDBY"}
+              {task ? statusLabels[task.status] : busy ? 'Waiting for task status' : notice ? 'Status unavailable' : 'Standby'}
             </span>
           </div>
         </div>
 
         <div className="telemetry-card">
-          <p className="section-label">
-            BROWSER TABS
-          </p>
+          <p className="section-label">BROWSER SESSION</p>
+          <p className="browser-state">{!connected ? 'Status unavailable' :
+            ({not_started: 'Chrome opens with your first command', launching: 'Launching Chrome...', ready: 'Chrome session ready', closed: 'Chrome closed; reopens on command', unavailable: 'Chrome needs recovery'}[browserState] ?? 'Chrome status unavailable')}</p>
 
           {activeTabs.length === 0 ? (
             <p className="empty-state">
@@ -562,7 +374,7 @@ function App() {
         </div>
 
         <div className="panel-footer">
-          <span className="status-dot online" />
+          <span className={`status-dot ${connected ? 'online' : ''}`} />
           GEMINI + PLAYWRIGHT
         </div>
       </aside>

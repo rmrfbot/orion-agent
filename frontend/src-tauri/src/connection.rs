@@ -2,6 +2,20 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use std::time::Duration;
 
+#[derive(serde::Serialize)]
+pub struct RequestError {
+    message: String,
+    status: Option<u16>,
+}
+impl RequestError {
+    fn new(message: &str, status: Option<u16>) -> Self {
+        Self {
+            message: message.into(),
+            status,
+        }
+    }
+}
+
 pub struct DesktopConnection {
     client: reqwest::Client,
 }
@@ -42,12 +56,12 @@ pub async fn orion_request(
     path: String,
     method: String,
     body: Option<Value>,
-) -> Result<Value, String> {
+) -> Result<Value, RequestError> {
     if !allowed_request(&method, &path) {
-        return Err("Unsupported ORION request".into());
+        return Err(RequestError::new("Unsupported ORION request", Some(400)));
     }
-    let method =
-        reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| "Invalid request method")?;
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| RequestError::new("Invalid request method", Some(400)))?;
     let mut request = connection
         .client
         .request(method, format!("http://127.0.0.1:8000{path}"));
@@ -57,17 +71,20 @@ pub async fn orion_request(
     let response = request
         .send()
         .await
-        .map_err(|_| "Cannot connect to the local ORION backend")?;
+        .map_err(|_| RequestError::new("Cannot connect to the local ORION backend. Start FastAPI; ORION will reconnect automatically.", None))?;
     if !response.status().is_success() {
-        return Err(format!(
-            "Local ORION backend returned HTTP {}",
-            response.status().as_u16()
-        ));
+        let status = response.status().as_u16();
+        let message = if status == 401 {
+            "ORION authentication failed. Restart tauri dev after changing the backend local token."
+        } else {
+            "The local ORION backend could not complete this request."
+        };
+        return Err(RequestError::new(message, Some(status)));
     }
     response
         .json()
         .await
-        .map_err(|_| "Local ORION backend returned an invalid response".into())
+        .map_err(|_| RequestError::new("Local ORION backend returned an invalid response", None))
 }
 
 #[cfg(test)]

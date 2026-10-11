@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Orion",
+  "productName": "ORION",
   "version": "0.1.0",
   "identifier": "com.orion.desktop",
   "build": {
@@ -13,9 +13,14 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "ORION Mission Control",
-        "width": 800,
-        "height": 600,
+        "title": "ORION | Mission Control",
+        "width": 1200,
+        "height": 680,
+        "minWidth": 900,
+        "minHeight": 560,
+        "center": true,
+        "theme": "Dark",
+        "backgroundColor": "#090d16",
         "resizable": true,
         "fullscreen": false
       }

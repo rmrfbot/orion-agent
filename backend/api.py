@@ -132,6 +132,7 @@ def health():
         ),
         "service": "ORION Desktop",
         "browser_worker": worker.running,
+        "browser_state": worker.browser_state,
     }
 
 

@@ -81,6 +81,7 @@ class BrowserWorker:
         self.context = None
         self.safe_browser = None
         self.submitted_at = {}
+        self.browser_state = 'not_started'
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -165,6 +166,7 @@ class BrowserWorker:
         self.context = None
         self.safe_browser = None
         if context is not None:
+            self.browser_state = 'closed'
             try:
                 context.close()
             except Exception:
@@ -191,16 +193,28 @@ class BrowserWorker:
                 return self.safe_browser
 
         self._close_browser()
+        self.browser_state = 'launching'
         print("[WORKER] Launching Google Chrome...")
         PROFILE.mkdir(parents=True, exist_ok=True)
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(PROFILE),
-            channel="chrome",
-            headless=False,
-            viewport={"width": 1440, "height": 900},
-            accept_downloads=False,
-        )
+        try:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(PROFILE),
+                channel="chrome",
+                headless=False,
+                viewport={"width": 1440, "height": 900},
+                accept_downloads=False,
+            )
+        except Exception:
+            self.browser_state = "unavailable"
+            raise
         self.context = context
+        def closed(*_):
+            if self.context is context and not any(not p.is_closed() for p in context.pages):
+                self.browser_state = 'closed'
+        context.on('page', lambda page: page.on('close', closed))
+        for page in context.pages:
+            page.on('close', closed)
+        context.on('close', lambda *_: setattr(self, 'browser_state', 'closed') if self.context is context else None)
         try:
             base = UniversalBrowser(context)
             valid = [
@@ -217,10 +231,12 @@ class BrowserWorker:
 
             self.safe_browser = APISafeBrowser(base)
             base.approve_domain = self.safe_browser.approve_domain
+            self.browser_state = 'ready'
             print("[WORKER] Chrome ready.")
             return self.safe_browser
         except Exception:
             self._close_browser()
+            self.browser_state = "unavailable"
             raise
 
     def _execute_task(self, task_id, playwright, UniversalBrowser, run_agent, START_URL):

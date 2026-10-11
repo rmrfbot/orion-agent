@@ -11,6 +11,17 @@ from backend.universal_agent import run_agent
 
 
 class APICompatibilityTests(unittest.TestCase):
+    def test_health_reads_cached_browser_state_without_launching_chrome(self):
+        worker = BrowserWorker()
+        worker.running = True
+        worker._ensure_browser = Mock(side_effect=AssertionError('health must not launch Chrome'))
+        with patch.object(api, 'worker', worker):
+            client = TestClient(api.app)
+            self.assertEqual(client.get('/health').json()['browser_state'], 'not_started')
+            worker.browser_state = 'closed'
+            self.assertEqual(client.get('/health').json()['browser_state'], 'closed')
+        worker._ensure_browser.assert_not_called()
+
     def test_submission_polling_and_authentication(self):
         worker = BrowserWorker()
         worker.running = True
