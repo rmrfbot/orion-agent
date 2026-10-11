@@ -2,7 +2,7 @@
 (function install() {
   if (!/(^|\.)youtube\.com$/.test(location.hostname)) return;
   const previous = window.__orionSkipWatcher;
-  if (previous?.version === 3 && !previous.stopped) return;
+  if (previous?.version === 4 && !previous.stopped) return;
   previous?.stop?.();
 
   const selector = '.ytp-ad-skip-button,.ytp-ad-skip-button-modern,' +
@@ -13,6 +13,7 @@
   const samples = [];
   const counters = {scans: 0, checks: 0, mutations: 0, clicks: 0};
   let observer, timer, stopped = false, lastScan = -Infinity;
+  let previousAdPlaying = false;
   const now = () => performance.now();
   const adPlaying = () => !!document.querySelector('.html5-video-player.ad-showing');
   const eligible = button => {
@@ -59,6 +60,19 @@
   const check = (source = 'mutation') => {
     if (stopped) return null;
     confirm();
+    const currentAdPlaying = adPlaying();
+    // YouTube can reuse the same visible control for the next ad.
+    if (currentAdPlaying && !previousAdPlaying) {
+      for (const button of candidates) {
+        const state = states.get(button);
+        if (state) {
+          state.handled = false;
+          state.attempts = 0;
+          state.last_click_ms = -Infinity;
+        }
+      }
+    }
+    previousAdPlaying = currentAdPlaying;
     let dispatched = null;
     for (const button of candidates) {
       if (!button.isConnected || !button.matches(selector)) {
@@ -123,7 +137,7 @@
     }, {once: true});
   };
   const monitor = {
-    version: 3, get stopped() { return stopped; }, stop,
+    version: 4, get stopped() { return stopped; }, stop,
     tick: () => !!check('driver'),
     skip: () => { scan(); return !!check('manual'); },
     snapshot: (limit = 100) => ({enabled: !stopped, counters: {...counters},

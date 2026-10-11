@@ -116,6 +116,24 @@ class MonitorTests(unittest.TestCase):
         self.assertGreater(result['advanced_seconds'], 0.02)
         self.assertGreaterEqual(result['observation_ms'], 300)
 
+    def test_same_control_is_reused_for_a_later_ad(self):
+        self.page.evaluate('''() => {
+          const player = document.querySelector('#movie_player');
+          const button = document.createElement('button');
+          button.className = 'ytp-ad-skip-button';
+          window.reusedSkipClicks = 0;
+          button.onclick = () => { window.reusedSkipClicks++; player.classList.remove('ad-showing'); };
+          player.classList.add('ad-showing');
+          document.querySelector('#controls').append(button);
+        }''')
+        self.page.wait_for_function('window.reusedSkipClicks === 1')
+        self.page.evaluate("() => document.querySelector('#movie_player').classList.add('ad-showing')")
+        self.page.wait_for_function('window.reusedSkipClicks === 2', timeout=1500)
+        self.page.wait_for_timeout(100)
+        self.assertEqual(self.page.evaluate('window.reusedSkipClicks'), 2)
+        samples = self.page.evaluate('window.__orionSkipWatcher.snapshot().samples')
+        self.assertTrue(all(sample['confirmed'] for sample in samples))
+
     def set_media(self, **values):
         self.page.locator('video').evaluate('''(v, values) => {
           v.pause();
