@@ -181,6 +181,14 @@ class MonitorTests(unittest.TestCase):
             with patch('backend.browser_worker.PROFILE', Path(profile)):
                 browser = worker._ensure_browser(launcher, FixtureBrowser, 'https://www.youtube.com')
                 first = worker.context
+                self.assertEqual([page.url for page in first.pages], ['about:blank'])
+                self.assertFalse(browser.base.domain_allowed('about:blank'))
+                initial = browser.page()
+                self.assertNotIn('error', browser.open_tab('https://www.youtube.com/watch?v=abcdefghijk'))
+                self.assertIs(browser.page(), initial)
+                self.assertEqual(len(first.pages), 1)
+                self.assertNotIn('error', browser.open_tab('https://www.youtube.com/watch?v=lmnopqrstuv'))
+                self.assertEqual(len(first.pages), 2)
                 self.assertIs(worker._ensure_browser(launcher, FixtureBrowser, 'https://www.youtube.com'), browser)
                 extra = worker.context.new_page()
                 extra.goto('https://www.youtube.com/watch?v=abcdefghijk')
