@@ -445,8 +445,33 @@ async function processPendingVoiceCommand() {
     return;
   }
 
-  processingVoiceCommand = true;
   const request = pendingVoiceCommand;
+  const normalizedRequest = request.toLowerCase();
+  if (/skip\s+(the\s+)?ad|skip\s+ads|skip\s+ad/.test(normalizedRequest)) {
+    try {
+      const response = await sendToActiveTab({ type: "skipAd" });
+      if (response?.ok) {
+        setActionStatus("Skipped the YouTube ad.");
+        setVoiceState("listening", "Skipped the YouTube ad.");
+        pendingVoiceCommand = null;
+        processingVoiceCommand = false;
+        return;
+      }
+      setActionStatus(response?.error || "No YouTube skip button was visible yet.", true);
+      setVoiceState("listening", response?.error || "No YouTube skip button was visible yet.");
+      pendingVoiceCommand = null;
+      processingVoiceCommand = false;
+      return;
+    } catch (error) {
+      setActionStatus(`Could not skip the ad: ${error.message}`, true);
+      setVoiceState("error", `Could not skip the ad: ${error.message}`);
+      pendingVoiceCommand = null;
+      processingVoiceCommand = false;
+      return;
+    }
+  }
+
+  processingVoiceCommand = true;
   pendingVoiceCommand = null;
   statusText.textContent = `Working on: ${request}`;
   setVoiceState("working", `Working on: ${request}`);
