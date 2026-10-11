@@ -14,7 +14,7 @@ from backend.performance import logger
 
 MAX_AUDIO_BYTES = 1_000_000
 MAX_SECONDS = 30
-MAX_TEXT = 500
+MAX_TEXT = 20000
 MAX_SPEECH_BYTES = 2_000_000
 
 
@@ -128,7 +128,7 @@ class VoiceService:
             raise HTTPException(503, 'Set a valid ELEVENLABS_VOICE_ID in the backend .env.')
         text = text.strip()
         if not 1 <= len(text) <= MAX_TEXT:
-            raise HTTPException(422, 'Speech text must contain 1 to 500 characters.')
+            raise HTTPException(422, 'Speech text must contain 1 to 20000 characters.')
         started = time.monotonic()
         try:
             audio = await self._call(f'text-to-speech/{voice}?output_format=mp3_22050_32',

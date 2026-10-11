@@ -64,7 +64,7 @@ function App() {
     disabled={busy||!connected||(!desktop&&!token.trim())} onMute={mute}/>;
 
   useEffect(()=>{
-    session.setResponseHandler((_text,task,source)=>{if(source==='voice')void voice.speak(task);else voice.stopSpeaking();});
+    session.setResponseHandler((_text,task)=>{void voice.speak(task);});
     void shell.load();
     const cancel=()=>{if(document.hidden)voice.suspend();};
     const close=()=>voice.suspend();

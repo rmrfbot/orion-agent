@@ -73,9 +73,9 @@ pub async fn orion_speak(
     connection: tauri::State<'_, DesktopConnection>,
     text: String,
 ) -> Result<Response, RequestError> {
-    if text.trim().is_empty() || text.chars().count() > 500 {
+    if text.trim().is_empty() || text.chars().count() > 20000 {
         return Err(RequestError::new(
-            "Speech text must contain 1 to 500 characters",
+            "Speech text must contain 1 to 20000 characters",
             Some(422),
         ));
     }

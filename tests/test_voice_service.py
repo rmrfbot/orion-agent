@@ -76,7 +76,7 @@ class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
         service=VoiceService(httpx.MockTransport(handle))
         audio,elapsed=await service.speak('Playback confirmed.')
         self.assertEqual(audio,b'ID3fixture-audio');self.assertGreaterEqual(elapsed,0)
-        with self.assertRaises(HTTPException):await service.speak('x'*501)
+        with self.assertRaises(HTTPException):await service.speak('x'*20001)
 
     async def test_upstream_errors_are_sanitized_and_never_retried(self):
         for status,expected in [(401,503),(403,503),(429,429),(500,502),(302,502)]:

@@ -22,18 +22,8 @@ export function commandFromTranscript(text: string) {
   return text.replace(/^\s*(?:hey\s+)?orion\b[\s,.:!-]*/i, '').trim();
 }
 export function spokenResponse(task: BrowserTask): string {
-  if (task.status === 'paused' || task.result?.human_intervention_required) return 'Human verification is required before continuing.';
-  if (task.status === 'failed') return "I couldn't complete that action.";
-  const message = task.result?.message || task.error || '';
-  if (task.status === 'incomplete') return task.result?.playback_state === 'buffering'
-    ? 'Video located. Playback is still buffering.' : "I couldn't complete that action. Check Mission Control for details.";
-  if (task.status !== 'finished') return '';
-  if (task.result?.verified_playback === true) return 'Playback confirmed.';
-  if (message === 'Website opened.' && /youtube/i.test(task.instruction)) return 'Affirmative. YouTube is open.';
-  if (message === 'Website opened.') return 'Affirmative. The website is open.';
-  if (/^Search results for /.test(message)) return 'Search results are ready.';
-  if (['Video paused.','Page scrolled.','Switched tab.','Closed tab.','Website opened in a new tab.'].includes(message)) return message;
-  return 'Task completed. Details are in Mission Control.';
+  if (!['finished', 'incomplete', 'failed', 'paused'].includes(task.status)) return '';
+  return task.result?.message || task.error || `Task ${task.status === 'finished' ? 'completed' : task.status === 'paused' ? 'human verification required' : task.status}.`;
 }
 
 /** Browser-independent lifecycle controller; injected IO makes permission/audio races testable. */

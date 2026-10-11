@@ -77,12 +77,17 @@ test('autoplay denial keeps audio for explicit Play response without another API
   await f.voice.speak(task());assert.equal(f.voice.getSnapshot().canReplay,true);assert.match(f.voice.getSnapshot().notice,/blocked/);
   allowed=true;f.voice.replay();await tick();assert.equal(f.voice.getSnapshot().speech,'speaking');assert.equal(f.calls.synthesis.length,1);f.voice.dispose();
 });
-test('spoken responses respect verified playback, incomplete and human-verification states',()=>{
-  assert.equal(spokenResponse({...task('finished','Video state: playing.'),result:{message:'Video state: playing.',verified_playback:true}}),'Playback confirmed.');
-  assert.doesNotMatch(spokenResponse(task('finished','Video state: playing.')),/Playback confirmed|playing/);
-  assert.match(spokenResponse({...task('incomplete'),result:{playback_state:'buffering'}}),/still buffering/);
-  assert.match(spokenResponse(task('paused')),/Human verification/);
-  assert.equal(spokenResponse(task('running')),'');assert.equal(commandFromTranscript('Hey ORION, open YouTube.'),'open YouTube.');
+test('spoken responses read the actual displayed result or error without canned summaries',async()=>{
+  for (const status of ['finished','incomplete','failed','paused']) {
+    const message = 'Here are your results.\n1. A detailed answer with the requested information.';
+    assert.equal(spokenResponse(task(status,message)),message);
+  }
+  assert.equal(spokenResponse({...task('failed'),result:null,error:'Website access denied.'}),'Website access denied.');
+  assert.equal(spokenResponse(task('running')),'');
+  assert.equal(commandFromTranscript('Hey ORION, open YouTube.'),'open YouTube.');
+  const f=fixture();const message='A full response. '.repeat(100);
+  await f.voice.speak(task('finished',message));
+  assert.deepEqual(f.calls.synthesis,[message]);f.voice.dispose();
 });
 test('PCM WAV transport is mono 16k, bounded and rejects silent audio',()=>{
   const samples=Float32Array.from({length:4800},(_,i)=>Math.sin(i/10)*.2);const bytes=pcmWav(samples,48000);const view=new DataView(bytes.buffer);
@@ -108,14 +113,14 @@ test('rapid expand clicks submit one window transition',async()=>{
   const first=shell.setMode(false);assert.equal(await shell.setMode(false),false);
   resolve({compact:false,shortcut:'Ctrl+Shift+Space',shortcut_error:null});await first;assert.equal(count,1);
 });
-test('voice and typed commands use the same session; only voice completion speaks',async()=>{
+test('voice and typed commands use the same session; both completions speak their results',async()=>{
   let posts=0;const sources=[];
   const session=new CommandSession({request:async(path)=>{if(path==='/api/tasks'){posts++;return task('queued');}return task();}});
   const f=fixture();const voice=new VoiceSession({io:f.io,canSubmit:()=>!session.getSnapshot().busy,submit:text=>session.submit(text,'voice')});voice.setSpeechEnabled(true);
-  session.setResponseHandler((_text,result,source)=>{sources.push(source);if(source==='voice')void voice.speak(result);});session.start();
-  await voice.begin();voice.cancel();await session.submit('open YouTube');assert.equal(f.calls.synthesis.length,0);
+  session.setResponseHandler((_text,result,source)=>{sources.push(source);void voice.speak(result);});session.start();
+  await voice.begin();voice.cancel();await session.submit('open YouTube');assert.equal(f.calls.synthesis.length,1);
   await voice.begin();f.advance();voice.stop();await tick();await tick();
-  assert.deepEqual(sources,['typed','voice']);assert.equal(posts,2);assert.equal(f.calls.synthesis.length,1);
+  assert.deepEqual(sources,['typed','voice']);assert.equal(posts,2);assert.equal(f.calls.synthesis.length,2);
   assert.equal(voice.getSnapshot().transcript,'ORION, open YouTube.');
   voice.dispose();f.voice.dispose();
   session.stop();

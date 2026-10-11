@@ -230,7 +230,7 @@ def verify_voice_local(request: Request):
 
 
 class SpeechRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=500)
+    text: str = Field(min_length=1, max_length=20000)
 
 
 @app.post('/api/voice/transcribe', dependencies=[Depends(verify_token), Depends(verify_voice_local)])
