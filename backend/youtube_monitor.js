@@ -2,11 +2,12 @@
 (function install() {
   if (!/(^|\.)youtube\.com$/.test(location.hostname)) return;
   const previous = window.__orionSkipWatcher;
-  if (previous?.version === 4 && !previous.stopped) return;
+  if (previous?.version === 5 && !previous.stopped) return;
   previous?.stop?.();
 
   const selector = '.ytp-ad-skip-button,.ytp-ad-skip-button-modern,' +
-    '.ytp-skip-ad-button,.ytp-ad-skip-button-container button';
+    '.ytp-skip-ad-button,.ytp-ad-skip-button-container button,' +
+    '#movie_player button[aria-label="Skip Ad" i],#movie_player button[aria-label="Skip Ads" i]';
   const candidates = new Set();
   const states = new WeakMap();
   const pending = new Set();
@@ -14,11 +15,12 @@
   const counters = {scans: 0, checks: 0, mutations: 0, clicks: 0};
   let observer, timer, stopped = false, lastScan = -Infinity;
   let previousAdPlaying = false;
+  let previousMedia = null;
   const now = () => performance.now();
   const adPlaying = () => !!document.querySelector('.html5-video-player.ad-showing');
   const eligible = button => {
     if (!button.isConnected || button.disabled || button.matches(':disabled') ||
-        button.closest('[aria-disabled="true"],[inert]')) return false;
+        button.closest('[aria-disabled="true"],[aria-hidden="true"],[inert]')) return false;
     const style = getComputedStyle(button);
     if (!button.getClientRects().length || style.visibility !== 'visible' ||
         style.display === 'none' || style.pointerEvents === 'none') return false;
@@ -61,8 +63,19 @@
     if (stopped) return null;
     confirm();
     const currentAdPlaying = adPlaying();
-    // YouTube can reuse the same visible control for the next ad.
-    if (currentAdPlaying && !previousAdPlaying) {
+    const video = document.querySelector('#movie_player video,video');
+    const media = video ? {src: video.currentSrc || video.getAttribute('src') || '', time: video.currentTime} : null;
+    // Consecutive ads can keep ad-showing and reuse the same button throughout.
+    const nextAd = currentAdPlaying && (!previousAdPlaying || (media && previousMedia &&
+      (media.src !== previousMedia.src || media.time + 0.5 < previousMedia.time)));
+    if (nextAd) {
+      for (const sample of pending) {
+        sample.confirmed = true;
+        sample.confirmation = 'ad_changed';
+        sample.confirmation_ms = now() - sample.clicked_at_ms;
+        delete sample.button;
+      }
+      pending.clear();
       for (const button of candidates) {
         const state = states.get(button);
         if (state) {
@@ -73,6 +86,7 @@
       }
     }
     previousAdPlaying = currentAdPlaying;
+    previousMedia = media;
     let dispatched = null;
     for (const button of candidates) {
       if (!button.isConnected || !button.matches(selector)) {
@@ -137,7 +151,7 @@
     }, {once: true});
   };
   const monitor = {
-    version: 4, get stopped() { return stopped; }, stop,
+    version: 5, get stopped() { return stopped; }, stop,
     tick: () => !!check('driver'),
     skip: () => { scan(); return !!check('manual'); },
     snapshot: (limit = 100) => ({enabled: !stopped, counters: {...counters},
@@ -170,7 +184,7 @@
       if (relevant) check('mutation');
     });
     observer.observe(document.documentElement, {childList: true, subtree: true,
-      attributes: true, attributeFilter: ['class', 'style', 'disabled', 'aria-disabled', 'hidden', 'inert']});
+      attributes: true, attributeFilter: ['class', 'style', 'disabled', 'aria-disabled', 'aria-hidden', 'aria-label', 'hidden', 'inert', 'src']});
     scan();
     check('initial');
     // CSS animations and stylesheets can change visibility without a DOM mutation.

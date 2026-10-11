@@ -134,6 +134,58 @@ class MonitorTests(unittest.TestCase):
         samples = self.page.evaluate('window.__orionSkipWatcher.snapshot().samples')
         self.assertTrue(all(sample['confirmed'] for sample in samples))
 
+    def test_three_consecutive_ads_reuse_control_without_leaving_ad_mode(self):
+        self.page.evaluate('''() => {
+          const player = document.querySelector('#movie_player');
+          const video = player.querySelector('video');
+          window.adSource = 'ad-1'; window.podClicks = 0;
+          Object.defineProperty(video, 'currentSrc', {get: () => window.adSource, configurable: true});
+          const button = document.createElement('button'); button.className = 'ytp-skip-ad-button';
+          button.onclick = () => {
+            window.podClicks++;
+            if (window.podClicks < 3) window.adSource = 'ad-' + (window.podClicks + 1);
+            else player.classList.remove('ad-showing');
+          };
+          player.classList.add('ad-showing'); player.append(button);
+        }''')
+        self.page.wait_for_function('window.podClicks === 3', timeout=1500)
+        self.page.wait_for_timeout(150)
+        self.assertEqual(self.page.evaluate('window.podClicks'), 3)
+        samples = self.page.evaluate('window.__orionSkipWatcher.snapshot().samples')
+        self.assertEqual(len(samples), 3)
+        self.assertTrue(all(sample['confirmed'] for sample in samples))
+
+    def test_reused_control_rearms_after_ad_time_resets(self):
+        self.page.evaluate('''() => {
+          const player = document.querySelector('#movie_player');
+          window.adTime = 8; window.resetClicks = 0;
+          Object.defineProperty(player.querySelector('video'), 'currentTime', {get: () => window.adTime, configurable: true});
+          const button = document.createElement('button'); button.className = 'ytp-ad-skip-button';
+          button.onclick = () => { window.resetClicks++; };
+          player.classList.add('ad-showing'); player.append(button);
+        }''')
+        self.page.wait_for_function('window.resetClicks === 1')
+        self.page.evaluate('window.adTime = 0')
+        self.page.wait_for_function('window.resetClicks === 2', timeout=500)
+        self.page.evaluate('window.adTime = 8; window.__orionSkipWatcher.tick()')
+        self.page.evaluate('window.adTime = 0')
+        self.page.wait_for_function('window.resetClicks === 3', timeout=500)
+        self.page.wait_for_timeout(100)
+        self.assertEqual(self.page.evaluate('window.resetClicks'), 3)
+
+    def test_accessible_skip_controls_and_hidden_ancestors(self):
+        self.page.evaluate('''() => {
+          const player = document.querySelector('#movie_player');
+          const wrapper = document.createElement('div'); wrapper.setAttribute('aria-hidden', 'true');
+          const button = document.createElement('button'); button.setAttribute('aria-label', 'Skip Ads');
+          window.accessibleClicks = 0; button.onclick = () => { window.accessibleClicks++; button.remove(); };
+          wrapper.append(button); player.append(wrapper); window.skipWrapper = wrapper;
+        }''')
+        self.page.wait_for_timeout(100)
+        self.assertEqual(self.page.evaluate('window.accessibleClicks'), 0)
+        self.page.evaluate("window.skipWrapper.setAttribute('aria-hidden', 'false')")
+        self.page.wait_for_function('window.accessibleClicks === 1', timeout=500)
+
     def set_media(self, **values):
         self.page.locator('video').evaluate('''(v, values) => {
           v.pause();
